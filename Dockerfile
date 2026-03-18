@@ -9,6 +9,12 @@ RUN npm install --production
 # Copy source
 COPY . .
 
+# Non-root user for the server process (CWE-250)
+RUN addgroup -g 1001 crucix \
+ && adduser -D -u 1001 -G crucix crucix \
+ && chown -R crucix:crucix /app
+USER crucix
+
 # Default port (override with -e PORT=xxxx)
 EXPOSE 3117
 
