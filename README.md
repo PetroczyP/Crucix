@@ -71,7 +71,7 @@ It was built for anyone who wants to understand what's actually happening in the
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/calesthio/Crucix.git
+git clone https://github.com/PetroczyP/Crucix.git
 cd Crucix
 
 # 2. Install dependencies (just Express)
@@ -97,7 +97,7 @@ The dashboard opens automatically at `http://localhost:3117` and immediately beg
 ### Docker
 
 ```bash
-git clone https://github.com/calesthio/Crucix.git
+git clone https://github.com/PetroczyP/Crucix.git
 cd Crucix
 cp .env.example .env    # add your API keys
 docker compose up -d
@@ -538,7 +538,7 @@ For contribution guidelines, review expectations, and source-add rules, see `CON
 
 ## Contact
 
-For partnerships, integrations, or other non-issue inquiries, you can reach me at `celesthioailabs@gmail.com`.
+For security issues, please use [private vulnerability reporting](https://github.com/PetroczyP/Crucix/security/advisories/new) via the repository's Security tab.
 
 For bugs and feature requests, please use GitHub Issues so discussion stays visible and actionable.
 
