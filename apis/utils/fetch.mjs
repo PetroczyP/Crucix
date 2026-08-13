@@ -4,7 +4,25 @@
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
 // Maximum total backoff across all retries (30s)
-const MAX_BACKOFF_MS = 30_000;
+export const MAX_BACKOFF_MS = 30_000;
+
+// Floor for any retry delay. Once the accumulated backoff reaches the ceiling,
+// the remaining budget is <= 0; retrying with no delay at all against an
+// endpoint that is already rate-limiting us is worse than exceeding the budget
+// slightly, so the floor takes precedence over the ceiling.
+export const MIN_RETRY_DELAY_MS = 250;
+
+/**
+ * Delay before the next retry: the desired wait, clamped to the remaining
+ * backoff budget, but never below MIN_RETRY_DELAY_MS.
+ * @param {number} desiredMs     - the wait this attempt would like
+ * @param {number} totalBackoff  - backoff already consumed
+ * @returns {number} a strictly positive delay in ms
+ */
+export function computeRetryDelay(desiredMs, totalBackoff) {
+  const remaining = MAX_BACKOFF_MS - totalBackoff;
+  return Math.max(Math.min(desiredMs, remaining), MIN_RETRY_DELAY_MS);
+}
 
 // Base delay for exponential backoff (100ms)
 const BASE_DELAY_MS = 100;
@@ -81,12 +99,10 @@ export async function safeFetch(url, opts = {}) {
       // Retryable — check Retry-After header
       const retryAfter = parseRetryAfter(res);
       if (retryAfter !== null && !isLastAttempt) {
-        const waitMs = Math.min(retryAfter * 1000, MAX_BACKOFF_MS - totalBackoff);
-        if (waitMs > 0) {
-          totalBackoff += waitMs;
-          await delay(waitMs);
-          continue;
-        }
+        const waitMs = computeRetryDelay(retryAfter * 1000, totalBackoff);
+        totalBackoff += waitMs;
+        await delay(waitMs);
+        continue;
       }
 
       throw new Error(`HTTP ${res.status}`);
@@ -104,12 +120,9 @@ export async function safeFetch(url, opts = {}) {
         // Exponential backoff with jitter: base * 2^i + random(0, 1000)
         const baseBackoff = Math.min(BASE_DELAY_MS * Math.pow(2, i), MAX_BACKOFF_MS);
         const jitter = Math.round(Math.random() * 1000);
-        const waitMs = Math.min(baseBackoff + jitter, MAX_BACKOFF_MS - totalBackoff);
-
-        if (waitMs > 0) {
-          totalBackoff += waitMs;
-          await delay(waitMs);
-        }
+        const waitMs = computeRetryDelay(baseBackoff + jitter, totalBackoff);
+        totalBackoff += waitMs;
+        await delay(waitMs);
       }
     }
   }

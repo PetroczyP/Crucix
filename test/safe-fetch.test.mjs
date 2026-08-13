@@ -3,7 +3,7 @@
 
 import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeFetch, ago, today, daysAgo } from '../apis/utils/fetch.mjs';
+import { safeFetch, ago, today, daysAgo, computeRetryDelay, MIN_RETRY_DELAY_MS, MAX_BACKOFF_MS } from '../apis/utils/fetch.mjs';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -208,5 +208,35 @@ describe('date helpers', () => {
     const result = daysAgo(5);
     const diff = Date.now() - new Date(result).getTime();
     assert.ok(diff > 4 * 86_400_000 && diff < 6 * 86_400_000, `Expected ~5 days ago, got ${diff}ms`);
+  });
+});
+
+// ─── Retry-delay clamp (project-authored) ─────────────────────────────────
+//
+// PR #121 computes `waitMs = Math.min(desired, MAX_BACKOFF_MS - totalBackoff)`
+// and then guards `if (waitMs > 0)`. Once the accumulated backoff reaches the
+// ceiling that expression is <= 0, the guard is false, and the retry fires with
+// NO delay at all — against an endpoint that is already rate-limiting us.
+// PR #121's own 18 cases never reach that boundary.
+
+describe('computeRetryDelay — backoff ceiling', () => {
+  it('returns the desired delay when well under the ceiling', () => {
+    assert.equal(computeRetryDelay(2_000, 0), 2_000);
+  });
+
+  it('clamps to the remaining budget as the ceiling is approached', () => {
+    assert.equal(computeRetryDelay(10_000, MAX_BACKOFF_MS - 5_000), 5_000);
+  });
+
+  it('never returns zero at the ceiling — the defect this guards', () => {
+    assert.equal(computeRetryDelay(10_000, MAX_BACKOFF_MS), MIN_RETRY_DELAY_MS);
+  });
+
+  it('never returns a negative delay past the ceiling', () => {
+    assert.ok(computeRetryDelay(10_000, MAX_BACKOFF_MS + 10_000) >= MIN_RETRY_DELAY_MS);
+  });
+
+  it('floors a sub-minimum remaining budget rather than skipping the wait', () => {
+    assert.equal(computeRetryDelay(10_000, MAX_BACKOFF_MS - 1), MIN_RETRY_DELAY_MS);
   });
 });
