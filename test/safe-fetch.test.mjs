@@ -240,3 +240,47 @@ describe('computeRetryDelay — backoff ceiling', () => {
     assert.equal(computeRetryDelay(10_000, MAX_BACKOFF_MS - 1), MIN_RETRY_DELAY_MS);
   });
 });
+
+// ─── Long Retry-After must not be retried (project-authored) ──────────────
+//
+// Live OpenSky returns HTTP 429 with `x-rate-limit-retry-after-seconds: 20934`
+// (~5.8h) once the anonymous quota is spent. Two defects followed:
+//   1. only standard `Retry-After` was read, so the vendor header was ignored
+//      and the request fell through to exponential backoff and retried anyway;
+//   2. a standard header was silently capped 20934s -> 60s, so we waited 30s
+//      (the whole backoff budget) and retried a server that said "6 hours".
+// Both burn credits against a metered API and stall every sweep by 30s.
+
+describe('safeFetch — retry-after longer than we can honour', () => {
+  let originalFetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('does not retry when standard Retry-After exceeds the max wait', async () => {
+    const f = mock.fn(() => mockResponse(429, 'rate limited', { 'Retry-After': '20934' }));
+    globalThis.fetch = f;
+    const t0 = Date.now();
+    const r = await safeFetch('https://example.com/api', { retries: 2 });
+    assert.equal(f.mock.callCount(), 1, 'must not retry');
+    assert.ok(String(r.error).includes('429'));
+    assert.ok(Date.now() - t0 < 1000, 'must not sit in backoff');
+  });
+
+  it('honours the vendor x-rate-limit-retry-after-seconds header', async () => {
+    const f = mock.fn(() => mockResponse(429, 'rate limited', { 'x-rate-limit-retry-after-seconds': '20934' }));
+    globalThis.fetch = f;
+    const r = await safeFetch('https://example.com/api', { retries: 2 });
+    assert.equal(f.mock.callCount(), 1, 'vendor header must be honoured');
+    assert.ok(String(r.error).includes('429'));
+  });
+
+  it('still retries when Retry-After is within the max wait', async () => {
+    let n = 0;
+    globalThis.fetch = mock.fn(() => (++n === 1
+      ? mockResponse(429, 'slow down', { 'Retry-After': '1' })
+      : mockResponse(200, { ok: true })));
+    const r = await safeFetch('https://example.com/api', { retries: 2 });
+    assert.deepEqual(r, { ok: true });
+    assert.equal(n, 2);
+  });
+});

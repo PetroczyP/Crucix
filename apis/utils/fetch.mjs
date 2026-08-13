@@ -34,15 +34,18 @@ function isRetryable(status) {
   return RETRYABLE_STATUSES.has(status);
 }
 
-function parseRetryAfter(res) {
-  const header = res.headers?.get('Retry-After');
-  if (!header) return null;
-  const seconds = parseInt(header, 10);
-  if (Number.isFinite(seconds) && seconds > 0) {
-    return Math.min(seconds, MAX_RETRY_AFTER_SEC);
+// Reads the server's requested wait, UNCAPPED, from the standard header or a
+// known vendor equivalent. Returns null when absent/unparseable.
+// OpenSky sends `x-rate-limit-retry-after-seconds`, not `Retry-After`, so
+// reading only the standard header made a 6-hour cool-off invisible.
+function parseRetryAfterSeconds(res) {
+  for (const name of ['Retry-After', 'x-rate-limit-retry-after-seconds']) {
+    const header = res.headers?.get(name);
+    if (!header) continue;
+    const seconds = parseInt(header, 10);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds;
   }
   // Retry-After can also be an HTTP-date, but that's rare in practice.
-  // Fall through to exponential backoff if we can't parse it.
   return null;
 }
 
@@ -96,8 +99,18 @@ export async function safeFetch(url, opts = {}) {
         return { error: `HTTP ${res.status}: ${errBody.slice(0, 200)}`, source: url };
       }
 
-      // Retryable — check Retry-After header
-      const retryAfter = parseRetryAfter(res);
+      // Retryable — check how long the server wants us to wait.
+      // If that exceeds what we can honour, retrying is pure waste: it burns
+      // quota against a metered API and stalls the sweep for the whole backoff
+      // budget, and it will fail again anyway. Give up now and report it.
+      const retryAfter = parseRetryAfterSeconds(res);
+      if (retryAfter !== null && retryAfter > MAX_RETRY_AFTER_SEC) {
+        return {
+          error: `HTTP ${res.status}: server asked for ${retryAfter}s (> ${MAX_RETRY_AFTER_SEC}s max wait) — not retrying`,
+          source: url,
+          retryAfterSeconds: retryAfter,
+        };
+      }
       if (retryAfter !== null && !isLastAttempt) {
         const waitMs = computeRetryDelay(retryAfter * 1000, totalBackoff);
         totalBackoff += waitMs;
