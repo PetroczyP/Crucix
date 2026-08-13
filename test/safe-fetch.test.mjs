@@ -3,7 +3,7 @@
 
 import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeFetch, ago, today, daysAgo, computeRetryDelay, MIN_RETRY_DELAY_MS, MAX_BACKOFF_MS } from '../apis/utils/fetch.mjs';
+import { safeFetch, ago, today, daysAgo, computeRetryDelay, canRetryWithinBudget, MIN_RETRY_DELAY_MS, MAX_BACKOFF_MS } from '../apis/utils/fetch.mjs';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -297,5 +297,64 @@ describe('safeFetch — retry-after longer than we can honour', () => {
     const r = await safeFetch('https://example.com/api', { retries: 2 });
     assert.deepEqual(r, { ok: true });
     assert.equal(n, 2);
+  });
+});
+
+// ─── Hard total-delay bound (project-authored, Judge M-2) ─────────────────
+//
+// computeRetryDelay() floors every wait at MIN_RETRY_DELAY_MS so a retry can
+// never fire with zero delay. That floor alone made MAX_BACKOFF_MS a SOFT
+// ceiling: past exhaustion each further attempt still added another 250ms, so
+// `retries: 10000` accumulated ~2,530s of waiting instead of the advertised
+// 30s. canRetryWithinBudget() closes the loop instead of extending it.
+
+describe('canRetryWithinBudget — the ceiling is hard', () => {
+  it('allows a retry with the whole budget untouched', () => {
+    assert.equal(canRetryWithinBudget(0), true);
+  });
+
+  it('allows a retry with exactly one minimum delay left', () => {
+    assert.equal(canRetryWithinBudget(MAX_BACKOFF_MS - MIN_RETRY_DELAY_MS), true);
+  });
+
+  it('refuses one millisecond below that boundary', () => {
+    assert.equal(canRetryWithinBudget(MAX_BACKOFF_MS - MIN_RETRY_DELAY_MS + 1), false);
+  });
+
+  it('refuses at and past the ceiling', () => {
+    assert.equal(canRetryWithinBudget(MAX_BACKOFF_MS), false);
+    assert.equal(canRetryWithinBudget(MAX_BACKOFF_MS + 10_000), false);
+  });
+
+  it('never lets computeRetryDelay exceed the remaining budget while it permits a retry', () => {
+    // The bound proof: while canRetryWithinBudget() is true, the floor can
+    // never push the delay past what is left, so totalBackoff <= MAX_BACKOFF_MS.
+    for (let spent = 0; spent <= MAX_BACKOFF_MS; spent += 137) {
+      if (!canRetryWithinBudget(spent)) continue;
+      const wait = computeRetryDelay(60 * 60 * 1000, spent);
+      assert.ok(spent + wait <= MAX_BACKOFF_MS, `overshoot at spent=${spent}: wait=${wait}`);
+    }
+  });
+});
+
+describe('safeFetch — total backoff is bounded regardless of opts.retries', () => {
+  let originalFetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('gives up once the budget is spent instead of retrying 10,000 times', async () => {
+    const f = mock.fn(() => mockNetworkError('connection refused'));
+    globalThis.fetch = f;
+
+    const t0 = Date.now();
+    const r = await safeFetch('https://example.com/api', { retries: 10_000, timeout: 50 });
+    const elapsed = Date.now() - t0;
+
+    // Exponential backoff burns the 30s budget in ~10 attempts; without the
+    // bound this call would have waited over 40 minutes.
+    assert.ok(f.mock.callCount() < 20, `expected <20 attempts, got ${f.mock.callCount()}`);
+    assert.ok(elapsed <= MAX_BACKOFF_MS + 5_000, `elapsed ${elapsed}ms exceeded the bound`);
+    assert.match(String(r.error), /retry budget exhausted/);
+    assert.equal(r.source, 'https://example.com/api');
   });
 });

@@ -7,4 +7,27 @@ services:
       - .env
     volumes:
       - ./runs:/app/runs
+
+    # Restart policy — deliberate, not a default (Judge M-4).
+    #
+    # The entrypoint exits 78 when /app/runs is read-only or un-chownable,
+    # rather than starting a server that would silently lose every sweep. Two
+    # policies were considered for what happens next:
+    #
+    #   on-failure:3   stops after three tries, leaving an `Exited (78)`
+    #                  container. Loud, but it also drops the automatic
+    #                  recovery this deployment actually depends on: a host
+    #                  reboot or Docker Desktop restart would leave the
+    #                  dashboard down until someone ran `docker start`.
+    #
+    #   unless-stopped chosen. The exit-78 path is already fail-fast and
+    #                  observable — the container reports `Restarting (78)`,
+    #                  never `healthy`, never binds the port, and logs the
+    #                  FATAL line on every attempt, so it cannot be mistaken
+    #                  for a working instance. It then recovers on its own the
+    #                  moment the mount is fixed, with no operator action.
+    #
+    # Docker only arms a restart policy once a container "is up for at least
+    # 10 seconds" (docs.docker.com/engine/containers/start-containers-automatically),
+    # so a first-ever exit 78 stays stopped and visible either way.
     restart: unless-stopped

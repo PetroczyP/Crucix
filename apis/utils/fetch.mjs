@@ -24,6 +24,27 @@ export function computeRetryDelay(desiredMs, totalBackoff) {
   return Math.max(Math.min(desiredMs, remaining), MIN_RETRY_DELAY_MS);
 }
 
+/**
+ * Whether another retry still fits inside the total backoff budget.
+ *
+ * The MIN_RETRY_DELAY_MS floor above is deliberate — retrying with no delay at
+ * all is worse than overshooting the budget slightly — but on its own it makes
+ * MAX_BACKOFF_MS a soft ceiling: every attempt past exhaustion still adds
+ * another floor's worth of delay, so a caller passing `retries: 10000` would
+ * accumulate ~2,530s of waiting rather than the advertised 30s.
+ *
+ * Gating each retry on this predicate makes the ceiling hard. Because we only
+ * retry while `remaining >= MIN_RETRY_DELAY_MS`, computeRetryDelay()'s floor
+ * can no longer exceed the remaining budget, so `totalBackoff` is bounded by
+ * MAX_BACKOFF_MS for any number of retries.
+ *
+ * @param {number} totalBackoff - backoff already consumed
+ * @returns {boolean}
+ */
+export function canRetryWithinBudget(totalBackoff) {
+  return MAX_BACKOFF_MS - totalBackoff >= MIN_RETRY_DELAY_MS;
+}
+
 // Base delay for exponential backoff (100ms)
 const BASE_DELAY_MS = 100;
 
@@ -117,7 +138,7 @@ export async function safeFetch(url, opts = {}) {
           retryAfterSeconds: retryAfter,
         };
       }
-      if (retryAfter !== null && !isLastAttempt) {
+      if (retryAfter !== null && !isLastAttempt && canRetryWithinBudget(totalBackoff)) {
         const waitMs = computeRetryDelay(retryAfter * 1000, totalBackoff);
         totalBackoff += waitMs;
         await delay(waitMs);
@@ -135,14 +156,23 @@ export async function safeFetch(url, opts = {}) {
         lastError = e;
       }
 
-      if (!isLastAttempt) {
-        // Exponential backoff with jitter: base * 2^i + random(0, 1000)
-        const baseBackoff = Math.min(BASE_DELAY_MS * Math.pow(2, i), MAX_BACKOFF_MS);
-        const jitter = Math.round(Math.random() * 1000);
-        const waitMs = computeRetryDelay(baseBackoff + jitter, totalBackoff);
-        totalBackoff += waitMs;
-        await delay(waitMs);
+      if (isLastAttempt) break;
+
+      // Hard total-delay bound. Without this the MIN_RETRY_DELAY_MS floor
+      // keeps extending the wait past MAX_BACKOFF_MS on every further attempt.
+      if (!canRetryWithinBudget(totalBackoff)) {
+        lastError = new Error(
+          `${lastError.message} (gave up: ${MAX_BACKOFF_MS}ms retry budget exhausted after ${i + 1} attempts)`
+        );
+        break;
       }
+
+      // Exponential backoff with jitter: base * 2^i + random(0, 1000)
+      const baseBackoff = Math.min(BASE_DELAY_MS * Math.pow(2, i), MAX_BACKOFF_MS);
+      const jitter = Math.round(Math.random() * 1000);
+      const waitMs = computeRetryDelay(baseBackoff + jitter, totalBackoff);
+      totalBackoff += waitMs;
+      await delay(waitMs);
     }
   }
 
