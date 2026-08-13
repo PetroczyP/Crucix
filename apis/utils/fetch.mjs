@@ -103,10 +103,16 @@ export async function safeFetch(url, opts = {}) {
       // If that exceeds what we can honour, retrying is pure waste: it burns
       // quota against a metered API and stalls the sweep for the whole backoff
       // budget, and it will fail again anyway. Give up now and report it.
+      // The threshold is the budget we can ACTUALLY honour, which is the
+      // remaining backoff allowance (<= 30s), not MAX_RETRY_AFTER_SEC (60s).
+      // Using 60 meant a server asking 31-60s skipped this path, waited the
+      // whole 30s budget and retried early anyway — the very quota burn this
+      // guard exists to stop.
       const retryAfter = parseRetryAfterSeconds(res);
-      if (retryAfter !== null && retryAfter > MAX_RETRY_AFTER_SEC) {
+      const honourableSec = Math.min(MAX_RETRY_AFTER_SEC, Math.max(0, MAX_BACKOFF_MS - totalBackoff) / 1000);
+      if (retryAfter !== null && retryAfter > honourableSec) {
         return {
-          error: `HTTP ${res.status}: server asked for ${retryAfter}s (> ${MAX_RETRY_AFTER_SEC}s max wait) — not retrying`,
+          error: `HTTP ${res.status}: server asked for ${retryAfter}s (> ${honourableSec}s we can honour) — not retrying`,
           source: url,
           retryAfterSeconds: retryAfter,
         };

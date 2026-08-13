@@ -274,6 +274,21 @@ describe('safeFetch — retry-after longer than we can honour', () => {
     assert.ok(String(r.error).includes('429'));
   });
 
+  // H-3: the honourable window is the remaining backoff budget (30s), not
+  // MAX_RETRY_AFTER_SEC (60s). 31-60s previously slipped through, waited the
+  // full 30s and retried early.
+  for (const [sec, shouldRetry] of [[29, true], [30, true], [31, false], [60, false], [61, false]]) {
+    it(`Retry-After ${sec}s ${shouldRetry ? 'retries' : 'does NOT retry'}`, async () => {
+      let n = 0;
+      globalThis.fetch = mock.fn(() => (++n === 1
+        ? mockResponse(429, 'slow down', { 'Retry-After': String(sec) })
+        : mockResponse(200, { ok: true })));
+      const r = await safeFetch('https://example.com/api', { retries: 2, });
+      if (shouldRetry) assert.ok(n > 1, `expected a retry for ${sec}s`);
+      else { assert.equal(n, 1, `expected no retry for ${sec}s`); assert.ok(String(r.error).includes('429')); }
+    });
+  }
+
   it('still retries when Retry-After is within the max wait', async () => {
     let n = 0;
     globalThis.fetch = mock.fn(() => (++n === 1

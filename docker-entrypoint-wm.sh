@@ -17,7 +17,13 @@ chown -R crucix:crucix /app/runs 2>/dev/null || true
 
 # A real write probe. `test -w` reads permission bits and returns true on a
 # read-only mount, so it cannot detect ro.
-if ! su-exec crucix sh -c ': > /app/runs/.wm-write-probe && rm -f /app/runs/.wm-write-probe' 2>/dev/null; then
+#
+# It must also refuse to follow a pre-existing path: a shell redirect into a
+# fixed name follows a symlink planted in the volume and TRUNCATES its target
+# (verified — a mounted victim file went from 7 bytes to 0 while the container
+# started normally). mktemp creates a fresh randomly-named file with O_EXCL,
+# so it can neither clobber nor traverse an attacker-planted link.
+if ! su-exec crucix sh -c 'p=$(mktemp /app/runs/.wm-probe.XXXXXX) && rm -f "$p"' 2>/dev/null; then
   echo "[WorldMonitor] FATAL: /app/runs is not writable by crucix (read-only mount or un-chownable volume)" >&2
   exit 78
 fi

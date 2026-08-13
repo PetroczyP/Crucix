@@ -4,9 +4,15 @@ import "./apis/utils/env.mjs"; // Load .env first
 
 // Security: validate PORT is numeric and in a safe range
 function validatePort(val) {
-  const port = parseInt(val);
-  if (isNaN(port) || port < 1024 || port > 65535) {
-    if (val !== undefined) console.warn('[Crucix] Invalid PORT, using default 3117');
+  // parseInt() accepts prefixes, so '1024abc', '1024.5' and '0x400' all yield
+  // 1024 — which contradicts "validate PORT is numeric". Require the whole
+  // trimmed string to be a decimal integer.
+  const str = String(val ?? '').trim();
+  const port = /^\d+$/.test(str) ? Number(str) : NaN;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    if (val !== undefined && str !== '') {
+      console.warn(`[Crucix] Invalid PORT "${val}", using default 3117`);
+    }
     return 3117;
   }
   return port;
