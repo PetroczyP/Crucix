@@ -168,8 +168,9 @@ export async function safeFetch(url, opts = {}) {
 
       if (isLastAttempt) break;
 
-      // Hard total-delay bound. Without this the MIN_RETRY_DELAY_MS floor
-      // keeps extending the wait past MAX_BACKOFF_MS on every further attempt.
+      // Hard accumulated-backoff bound. Without this the MIN_RETRY_DELAY_MS
+      // floor keeps extending the sleep past MAX_BACKOFF_MS on every further
+      // attempt. It bounds sleeping only — request time is not charged (M-6).
       if (!canRetryWithinBudget(totalBackoff)) {
         lastError = new Error(
           `${lastError.message} (gave up: ${MAX_BACKOFF_MS}ms retry budget exhausted after ${i + 1} attempts)`

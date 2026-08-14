@@ -300,7 +300,7 @@ describe('safeFetch — retry-after longer than we can honour', () => {
   });
 });
 
-// ─── Hard total-delay bound (project-authored, Judge M-2) ─────────────────
+// ─── Hard accumulated-backoff bound (project-authored, Judge M-2/M-6) ─────
 //
 // computeRetryDelay() floors every wait at MIN_RETRY_DELAY_MS so a retry can
 // never fire with zero delay. That floor alone made MAX_BACKOFF_MS a SOFT
