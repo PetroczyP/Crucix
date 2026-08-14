@@ -20,14 +20,31 @@ services:
     #                  reboot or Docker Desktop restart would leave the
     #                  dashboard down until someone ran `docker start`.
     #
-    #   unless-stopped chosen. The exit-78 path is already fail-fast and
-    #                  observable — the container reports `Restarting (78)`,
-    #                  never `healthy`, never binds the port, and logs the
-    #                  FATAL line on every attempt, so it cannot be mistaken
-    #                  for a working instance. It then recovers on its own the
-    #                  moment the mount is fixed, with no operator action.
+    #   unless-stopped chosen. Measured, not assumed: throughout the loop the
+    #                  container reports `Restarting (78)`, health `unhealthy`,
+    #                  and refuses connections on the published port, logging
+    #                  the FATAL line once per attempt. It cannot be mistaken
+    #                  for a working instance. Fixing the mount from outside —
+    #                  with no `docker start`/`restart` and no action on the
+    #                  container at all — was picked up by the already-armed
+    #                  retry, which then came up healthy and served /api/health.
     #
-    # Docker only arms a restart policy once a container "is up for at least
-    # 10 seconds" (docs.docker.com/engine/containers/start-containers-automatically),
-    # so a first-ever exit 78 stays stopped and visible either way.
+    # Two measured caveats, recorded because they contradict the obvious
+    # reading of the docs rather than confirming it:
+    #
+    #   * Docker documents that a restart policy "only takes effect after a
+    #     container starts successfully... up for at least 10 seconds". A
+    #     first-ever exit 78 happens in well under a second, so that rule
+    #     would predict a stationary `Exited (78)`. It does not: the container
+    #     entered the restart loop immediately, on the first exit, every time.
+    #     Do not rely on the 10-second rule to surface a broken mount.
+    #
+    #   * Retry backoff doubles — 0.22s, 0.28s, 0.49s, 0.89s, 1.70s, 3.31s,
+    #     6.49s, 12.90s, 25.70s, 51.22s observed across two runs. So recovery
+    #     is automatic but not instant: after ~10 failed attempts the wait is
+    #     already ~51s. No cap was measured, so none is claimed here.
+    #
+    # on-failure:3 was rejected on the same evidence: it exhausted its budget
+    # in under 2 seconds and left an `Exited (78)` container that stayed down,
+    # requiring a manual `docker start` even after the mount was repaired.
     restart: unless-stopped
