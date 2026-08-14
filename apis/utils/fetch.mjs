@@ -3,7 +3,17 @@
 // HTTP status codes that are safe to retry
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
-// Maximum total backoff across all retries (30s)
+// Maximum total BACKOFF across all retries (30s).
+//
+// Scope, stated precisely because it is easy to over-read (Judge M-6): this
+// bounds the time safeFetch spends *sleeping between* attempts. It is not an
+// overall deadline — per-attempt request time is not charged against it, so
+// total wall-clock is roughly MAX_BACKOFF_MS + (attempts x opts.timeout).
+// Measured: `retries: 10000, timeout: 500` against an aborting endpoint took
+// 34.5s of wall time while reporting the 30s backoff budget exhausted.
+// A real deadline that charges request time belongs to issue 006, which owns
+// the safeFetch contract; widening it here would change timeout semantics for
+// all 29 sources at once (R-4).
 export const MAX_BACKOFF_MS = 30_000;
 
 // Floor for any retry delay. Once the accumulated backoff reaches the ceiling,

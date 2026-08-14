@@ -337,12 +337,15 @@ describe('canRetryWithinBudget — the ceiling is hard', () => {
   });
 });
 
-describe('safeFetch — total backoff is bounded regardless of opts.retries', () => {
+describe('safeFetch — accumulated backoff is bounded regardless of opts.retries', () => {
   let originalFetch;
   beforeEach(() => { originalFetch = globalThis.fetch; });
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it('gives up once the budget is spent instead of retrying 10,000 times', async () => {
+  it('gives up once the backoff budget is spent instead of retrying 10,000 times', async () => {
+    // This mock rejects immediately, so request time is ~0 and elapsed is a
+    // fair proxy for accumulated backoff. See the next test for the case where
+    // that proxy does NOT hold.
     const f = mock.fn(() => mockNetworkError('connection refused'));
     globalThis.fetch = f;
 
@@ -351,10 +354,32 @@ describe('safeFetch — total backoff is bounded regardless of opts.retries', ()
     const elapsed = Date.now() - t0;
 
     // Exponential backoff burns the 30s budget in ~10 attempts; without the
-    // bound this call would have waited over 40 minutes.
+    // bound this call would have slept for over 40 minutes.
     assert.ok(f.mock.callCount() < 20, `expected <20 attempts, got ${f.mock.callCount()}`);
-    assert.ok(elapsed <= MAX_BACKOFF_MS + 5_000, `elapsed ${elapsed}ms exceeded the bound`);
+    assert.ok(elapsed <= MAX_BACKOFF_MS + 5_000, `elapsed ${elapsed}ms exceeded the backoff bound`);
     assert.match(String(r.error), /retry budget exhausted/);
     assert.equal(r.source, 'https://example.com/api');
+  });
+
+  // Judge M-6. The bound is on accumulated BACKOFF, not on total wall-clock:
+  // per-attempt request time is not charged against MAX_BACKOFF_MS. Encoding
+  // that here so the guarantee cannot quietly be re-read as a deadline. A real
+  // overall deadline belongs to issue 006 (it would change timeout semantics
+  // for all 29 sources at once — R-4).
+  it('does NOT bound total wall-clock — request time is not charged to the budget', async () => {
+    const TIMEOUT = 500;
+    globalThis.fetch = mock.fn((url, opts) => new Promise((_, rej) => {
+      opts.signal.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')));
+    }));
+
+    const t0 = Date.now();
+    const r = await safeFetch('https://example.com/api', { retries: 10_000, timeout: TIMEOUT });
+    const elapsed = Date.now() - t0;
+
+    // Every attempt burns a full timeout on top of the backoff it sleeps.
+    assert.ok(elapsed > MAX_BACKOFF_MS,
+      `expected elapsed (${elapsed}ms) to EXCEED the ${MAX_BACKOFF_MS}ms backoff budget — ` +
+      'if this now fails, safeFetch grew a real deadline and this test should become the assertion for it');
+    assert.match(String(r.error), /retry budget exhausted/);
   });
 });
