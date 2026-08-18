@@ -13,7 +13,8 @@
     "brief:save": "node apis/save-briefing.mjs",
     "diag": "node diag.mjs",
     "clean": "node scripts/clean.mjs",
-    "fresh-start": "npm run clean && npm start"
+    "fresh-start": "npm run clean && npm start",
+    "perf:globe": "node scripts/perf/globe-frame-time.mjs"
   },
   "keywords": [
     "osint",
