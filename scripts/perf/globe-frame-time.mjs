@@ -122,28 +122,54 @@ for (let r = 0; r < ROUNDS; r++) {
 
   // --- the zoom contract, in full (AC-4). Each observable is asserted independently, so
   // deleting any ONE of the handler's altitude-dependent setters goes red on its own.
+  //
+  // The epsilon is pinned BEHAVIOURALLY, not by reading the declaration. Reading
+  // `const ZOOM_EPSILON = 0.005` proves only that the literal exists; it says nothing about
+  // what the comparison actually uses, so a build declaring 0.005 while comparing against a
+  // hardcoded 0.02 would slip through (Judge build-r3 H-2). Probe steps are derived from the
+  // declared value rather than hardcoded, so a smaller-but-valid epsilon stays green.
   const zoom = JSON.parse(await ev(send, `(async()=>{
-    const pr=()=>{const f=globe.pointRadius();return typeof f==='function'?+f({size:1}).toFixed(6):f};
-    const as=()=>{const f=globe.arcStroke();return typeof f==='function'?+f({stroke:1}).toFixed(6):f};
-    const ls=()=>{const f=globe.labelSize();return typeof f==='function'?+f({size:1}).toFixed(6):f};
+    const pr=()=>{const f=globe.pointRadius();return typeof f==='function'?+f({size:1}).toFixed(9):f};
+    const as=()=>{const f=globe.arcStroke();return typeof f==='function'?+f({stroke:1}).toFixed(9):f};
+    const ls=()=>{const f=globe.labelSize();return typeof f==='function'?+f({size:1}).toFixed(9):f};
     const set=async a=>{globe.pointOfView({altitude:a},0);await new Promise(r=>setTimeout(r,700))};
     const src=[...document.querySelectorAll('script')].map(x=>x.textContent).join('');
     const m=src.match(/const ZOOM_EPSILON\\s*=\\s*([0-9.]+)/);
+    const eps=m?parseFloat(m[1]):null;
     const wasRot=globe.controls().autoRotate; globe.controls().autoRotate=false;
-    // first callback after a fresh registration must run even for a SUB-epsilon step
+
+    // (1) first callback after a fresh registration must run, even below the epsilon
     await set(1.5); plotMarkers(); await new Promise(r=>setTimeout(r,700));
-    const p0=pr(); await set(1.502); const p1=pr();
-    // and once warm, a sub-epsilon step must be suppressed (the guard is live)
-    await set(1.5035); const p2=pr();
-    // the fixed 0.02 step must move all three accessors, and cross the label boundary both ways
+    const p0=pr(); await set(1.5+eps*0.4); const p1=pr();
+    const firstCb = p0!==p1;
+
+    // (2) warm, a step at HALF the declared epsilon must be suppressed
+    //     -> the effective comparator is not materially SMALLER than declared
+    const base2=1.5+eps*0.4; const q0=pr(); await set(base2+eps*0.5); const q1=pr();
+    const warmSuppressed = q0===q1;
+
+    // (3) warm, a step at TWICE the declared epsilon must apply
+    //     -> the effective comparator is not materially LARGER than declared.
+    //     This is what catches "declare 0.005, compare against 0.02".
+    const r0=pr(); await set(base2+eps*2); const r1=pr();
+    const tracksDeclared = r0!==r1;
+
+    // (4) warm, an absolute 0.015 step must apply -> effective epsilon < 0.015 < 0.02 (AC-4),
+    //     asserted on behaviour rather than on the declared literal.
+    const base4=1.40; await set(base4); const s0=pr(); await set(base4+0.015); const s1=pr();
+    const underAbsoluteBound = s0!==s1;
+
+    // (5) the fixed contract step must move all three accessors and cross the label boundary
     await set(1.79); const a={p:pr(),s:as(),l:ls()};
     await set(1.81); const b={p:pr(),s:as(),l:ls()};
     await set(1.79); const c={p:pr(),s:as(),l:ls()};
     globe.controls().autoRotate=wasRot;
-    return JSON.stringify({eps:m?parseFloat(m[1]):null,firstCb:p0!==p1,warmSuppressed:p1===p2,a,b,c})})()`));
-  must(typeof zoom.eps === 'number' && zoom.eps < 0.02, `ZOOM_EPSILON is ${zoom.eps}, must be < 0.02`);
+    return JSON.stringify({eps,firstCb,warmSuppressed,tracksDeclared,underAbsoluteBound,a,b,c})})()`));
+  must(typeof zoom.eps === 'number' && zoom.eps < 0.02, `declared ZOOM_EPSILON is ${zoom.eps}, must be < 0.02`);
   must(zoom.firstCb, 'first callback after a fresh plotMarkers() registration was swallowed');
-  must(zoom.warmSuppressed, 'a warm sub-epsilon step was NOT suppressed — the guard is not live');
+  must(zoom.warmSuppressed, 'a step at half the declared epsilon was NOT suppressed — the guard is not live');
+  must(zoom.tracksDeclared, `a step at twice the declared epsilon (${zoom.eps}) did NOT apply — the comparison does not use the declared value`);
+  must(zoom.underAbsoluteBound, 'a 0.015 altitude step did NOT apply — the effective epsilon is >= 0.015, violating the < 0.02 contract');
   must(zoom.a.p !== zoom.b.p && zoom.b.p !== zoom.c.p, `pointRadius does not track zoom (${zoom.a.p}/${zoom.b.p}/${zoom.c.p})`);
   must(zoom.a.s !== zoom.b.s && zoom.b.s !== zoom.c.s, `arcStroke does not track zoom (${zoom.a.s}/${zoom.b.s}/${zoom.c.s})`);
   must(zoom.a.l > 0 && zoom.b.l === 0 && zoom.c.l > 0, `label visibility does not cross alt<1.8 both ways (${zoom.a.l}/${zoom.b.l}/${zoom.c.l})`);
@@ -153,6 +179,7 @@ for (let r = 0; r < ROUNDS; r++) {
   console.log(`  run ${r + 1}/${ROUNDS}  median ${p.med}ms  frames>33ms ${p.over33}/${FRAMES}  ` +
               `arcs=${scene.arcs}/${scene.labelled} res=${scene.res} rot=${scene.autoRotate} ` +
               `eps=${zoom.eps} firstCb=${zoom.firstCb} warmSup=${zoom.warmSuppressed} ` +
+              `tracks=${zoom.tracksDeclared} absBound=${zoom.underAbsoluteBound} ` +
               `pr=${zoom.a.p}->${zoom.b.p} as=${zoom.a.s}->${zoom.b.s} ls=${zoom.a.l}->${zoom.b.l}`);
 }
 const sorted = [...meds].sort((a, b) => a - b);
