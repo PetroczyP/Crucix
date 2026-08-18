@@ -143,16 +143,19 @@ for (let r = 0; r < ROUNDS; r++) {
     const p0=pr(); await set(1.5+eps*0.4); const p1=pr();
     const firstCb = p0!==p1;
 
-    // (2) warm, a step at HALF the declared epsilon must be suppressed
-    //     -> the effective comparator is not materially SMALLER than declared
-    const base2=1.5+eps*0.4; const q0=pr(); await set(base2+eps*0.5); const q1=pr();
-    const warmSuppressed = q0===q1;
-
-    // (3) warm, a step at TWICE the declared epsilon must apply
-    //     -> the effective comparator is not materially LARGER than declared.
-    //     This is what catches "declare 0.005, compare against 0.02".
-    const r0=pr(); await set(base2+eps*2); const r1=pr();
-    const tracksDeclared = r0!==r1;
+    // (2)+(3) pin the EFFECTIVE comparator into a +-10% band around the declared value.
+    //     A broad envelope is not enough: with the declaration left at 0.005, a comparator
+    //     of 0.01 sits inside a [eps*0.5, eps*2] window and passes (Judge build-r4 H-2).
+    //     So: a step just BELOW the declared epsilon must be suppressed, and a step just
+    //     ABOVE it must apply. Both are taken from the same base -- a suppressed step does
+    //     not advance lastZoomAlt, so the second delta is still measured from the anchor.
+    const base2=1.5+eps*0.4;
+    await set(base2); await set(base2+eps*5);   // force an apply so lastZoomAlt == base2+eps*5
+    const anchor=base2+eps*5;
+    const q0=pr(); await set(anchor+eps*0.9); const q1=pr();
+    const warmSuppressed = q0===q1;             // 0.9x declared -> must NOT pass the comparator
+    const r0=pr(); await set(anchor+eps*1.1); const r1=pr();
+    const tracksDeclared = r0!==r1;             // 1.1x declared -> MUST pass it
 
     // (4) warm, an absolute 0.015 step must apply -> effective epsilon < 0.015 < 0.02 (AC-4),
     //     asserted on behaviour rather than on the declared literal.
@@ -167,8 +170,8 @@ for (let r = 0; r < ROUNDS; r++) {
     return JSON.stringify({eps,firstCb,warmSuppressed,tracksDeclared,underAbsoluteBound,a,b,c})})()`));
   must(typeof zoom.eps === 'number' && zoom.eps < 0.02, `declared ZOOM_EPSILON is ${zoom.eps}, must be < 0.02`);
   must(zoom.firstCb, 'first callback after a fresh plotMarkers() registration was swallowed');
-  must(zoom.warmSuppressed, 'a step at half the declared epsilon was NOT suppressed — the guard is not live');
-  must(zoom.tracksDeclared, `a step at twice the declared epsilon (${zoom.eps}) did NOT apply — the comparison does not use the declared value`);
+  must(zoom.warmSuppressed, `a step at 0.9x the declared epsilon (${zoom.eps}) was NOT suppressed — the effective comparator is smaller than declared`);
+  must(zoom.tracksDeclared, `a step at 1.1x the declared epsilon (${zoom.eps}) did NOT apply — the effective comparator is LARGER than declared, so the comparison does not use it`);
   must(zoom.underAbsoluteBound, 'a 0.015 altitude step did NOT apply — the effective epsilon is >= 0.015, violating the < 0.02 contract');
   must(zoom.a.p !== zoom.b.p && zoom.b.p !== zoom.c.p, `pointRadius does not track zoom (${zoom.a.p}/${zoom.b.p}/${zoom.c.p})`);
   must(zoom.a.s !== zoom.b.s && zoom.b.s !== zoom.c.s, `arcStroke does not track zoom (${zoom.a.s}/${zoom.b.s}/${zoom.c.s})`);
