@@ -1366,8 +1366,10 @@ function plotMarkers(){
   // ~60x/second and pushed redundant updates into the arc and point layers.
   // Measured (issue 016, 74 arcs, 1728x1080 @2x): 58.1ms -> 8.4ms median frame time.
   //
-  // ZOOM_EPSILON sits far above float drift from damping and far below the 0.02 altitude step
-  // the acceptance test uses, so a real zoom can never be swallowed. lastZoomAlt is declared
+  // ZOOM_EPSILON sits far above float drift from damping and four times below the 0.02 altitude
+  // step the acceptance test uses. It does deliberately coalesce sub-epsilon changes: a single
+  // move smaller than 0.005 is skipped, and the 1.2/1.8/2.0 discrete transitions can lag by less
+  // than that — which is the "material change" contract, not an absence of one. lastZoomAlt is declared
   // here rather than at module scope: plotMarkers() re-registers onZoom on every call, so each
   // registration starts unset and its first callback always runs.
   const ZOOM_EPSILON = 0.005;

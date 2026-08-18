@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-// Globe-mode frame-time regression guard (issue 016).
+// Globe-mode regression guard (issue 016).
+//
+// Frame time ALONE is a wrong oracle: deleting the arcs, stopping rotation, or making the
+// zoom handler return unconditionally are all fast AND broken. So this asserts the workload
+// and the behaviour as well as the speed, and every check is fail-closed.
 //
 // Why this exists: globe.gl fires onZoom for rotation as well as zoom, so an unguarded
 // zoom handler re-runs every altitude-dependent setter on each frame of auto-rotation and
@@ -24,6 +28,9 @@ const TARGET = process.env.TARGET || 'http://localhost:3117';
 const ROUNDS = +(process.env.ROUNDS || 3);
 const FRAMES = 150;
 const THRESHOLD_MS = +(process.env.THRESHOLD_MS || 20);   // measured 8.3; unguarded was 58.1
+const EXPECT_ARCS = +(process.env.EXPECT_ARCS || 74);      // the baked snapshot's full corridor set
+const EXPECT_LABELLED = +(process.env.EXPECT_LABELLED || 39);
+const EXPECT_RES = +(process.env.EXPECT_RES || 64);
 const EVAL_TIMEOUT = 25000;
 
 async function cdp() {
@@ -70,17 +77,48 @@ await send('Page.enable'); await send('Runtime.enable'); await send('Network.ena
 await send('Network.setBlockedURLs', { urls: ['*/api/data', '*/events'] });
 await send('Emulation.setDeviceMetricsOverride', { width: 1728, height: 1080, deviceScaleFactor: 2, mobile: false });
 
+const failures = [];
+const must = (ok, msg) => { if (!ok) failures.push(msg); return ok; };
 const meds = [];
 for (let r = 0; r < ROUNDS; r++) {
   await send('Page.navigate', { url: TARGET });
   await new Promise(x => setTimeout(x, 11000));
   await ev(send, `document.getElementById('projToggle').click()`);
   await new Promise(x => setTimeout(x, 5000));
-  await ev(send, `globe.controls().autoRotate=true; globe.pointOfView({altitude:2.5},0); 'ok'`);
+
+  // --- workload: a fast build that renders nothing is not a passing build ---
+  const scene = JSON.parse(await ev(send, `JSON.stringify({
+    arcs: globe.arcsData().length,
+    labelled: globe.arcsData().filter(a => a.label).length,
+    res: globe.arcCurveResolution(),
+    autoRotate: globe.controls().autoRotate })`));   // READ BEFORE we touch it: proves the default
+  must(scene.arcs === EXPECT_ARCS, `scene: ${scene.arcs} arcs, expected ${EXPECT_ARCS}`);
+  must(scene.labelled === EXPECT_LABELLED, `scene: ${scene.labelled} labelled arcs, expected ${EXPECT_LABELLED}`);
+  must(scene.res === EXPECT_RES, `scene: curve resolution ${scene.res}, expected ${EXPECT_RES}`);
+  must(scene.autoRotate === true, `autoRotate defaults to ${scene.autoRotate}, expected true`);
+
+  // --- the camera must actually be moving; a frozen globe is trivially fast ---
+  await ev(send, `globe.pointOfView({altitude:2.5},0); 'ok'`);
   await new Promise(x => setTimeout(x, 2000));
+  const moved = JSON.parse(await ev(send, `new Promise(res=>{const a=globe.pointOfView();
+    setTimeout(()=>{const b=globe.pointOfView();
+      res(JSON.stringify({d:Math.abs(b.lng-a.lng)+Math.abs(b.lat-a.lat)}))},1500)})`));
+  must(moved.d > 0.05, `viewpoint did not move during auto-rotation (delta ${moved.d})`);
+
+  // --- the zoom contract: the handler must still respond above the epsilon ---
+  const zoom = JSON.parse(await ev(send, `(async()=>{
+    const rd=()=>{const f=globe.pointRadius();return typeof f==='function'?+f({size:1}).toFixed(6):f};
+    const wasRot=globe.controls().autoRotate; globe.controls().autoRotate=false;
+    globe.pointOfView({altitude:1.79},0); await new Promise(r=>setTimeout(r,700)); const a=rd();
+    globe.pointOfView({altitude:1.81},0); await new Promise(r=>setTimeout(r,700)); const b=rd();
+    globe.controls().autoRotate=wasRot;
+    return JSON.stringify({a,b})})()`));
+  must(zoom.a !== zoom.b, `zoom is dead: pointRadius unchanged across 1.79 -> 1.81 (${zoom.a})`);
+
   const p = JSON.parse(await ev(send, PACE));
   meds.push(p.med);
-  console.log(`  run ${r + 1}/${ROUNDS}  median ${p.med}ms  frames>33ms ${p.over33}/${FRAMES}`);
+  console.log(`  run ${r + 1}/${ROUNDS}  median ${p.med}ms  frames>33ms ${p.over33}/${FRAMES}  ` +
+              `arcs=${scene.arcs}/${scene.labelled} res=${scene.res} rot=${scene.autoRotate} zoom=${zoom.a}->${zoom.b}`);
 }
 const sorted = [...meds].sort((a, b) => a - b);
 const upperMedian = sorted[Math.floor(sorted.length / 2)];
@@ -88,5 +126,9 @@ console.log(`\nglobe-mode frame time: upper-median ${upperMedian}ms  (threshold 
 close();
 if (pageErrors.length) { console.error(`FAIL: ${pageErrors.length} page error(s):\n  ${pageErrors.slice(0, 5).join('\n  ')}`); process.exit(1); }
 if (meds.length < ROUNDS) { console.error(`FAIL: only ${meds.length}/${ROUNDS} runs completed`); process.exit(1); }
+if (failures.length) {
+  console.error(`FAIL: the build is fast but not correct —\n  ${[...new Set(failures)].join('\n  ')}`);
+  process.exit(1);
+}
 if (upperMedian > THRESHOLD_MS) { console.error(`FAIL: ${upperMedian}ms exceeds ${THRESHOLD_MS}ms — the zoom guard may have regressed (jarvis.html, plotMarkers)`); process.exit(1); }
 console.log('PASS');
