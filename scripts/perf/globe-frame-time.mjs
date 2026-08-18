@@ -80,6 +80,21 @@ await send('Emulation.setDeviceMetricsOverride', { width: 1728, height: 1080, de
 const failures = [];
 const must = (ok, msg) => { if (!ok) failures.push(msg); return ok; };
 const meds = [];
+
+// H-3: the dashboard restores `crucix_low_perf` (jarvis.html:407) and `crucix-layers`
+// (:429-431) from localStorage before anything below can read a default. A profile where
+// LITE was once chosen starts with rotation off; one where Air Activity was hidden renders
+// zero arcs. Both are CORRECT behaviour and would make the assertions below report a
+// regression that does not exist. So: land on the origin, clear those keys, and only then
+// perform the measured navigation. This makes the guard independent of the attached profile.
+await send('Page.navigate', { url: TARGET });
+await new Promise(x => setTimeout(x, 1500));
+const cleared = await ev(send, `(()=>{const before={
+    perf: localStorage.getItem('crucix_low_perf'), layers: localStorage.getItem('crucix-layers')};
+  localStorage.removeItem('crucix_low_perf'); localStorage.removeItem('crucix-layers');
+  return JSON.stringify(before)})()`);
+console.log(`  (cleared inherited preferences: ${cleared})`);
+
 for (let r = 0; r < ROUNDS; r++) {
   await send('Page.navigate', { url: TARGET });
   await new Promise(x => setTimeout(x, 11000));
@@ -105,20 +120,40 @@ for (let r = 0; r < ROUNDS; r++) {
       res(JSON.stringify({d:Math.abs(b.lng-a.lng)+Math.abs(b.lat-a.lat)}))},1500)})`));
   must(moved.d > 0.05, `viewpoint did not move during auto-rotation (delta ${moved.d})`);
 
-  // --- the zoom contract: the handler must still respond above the epsilon ---
+  // --- the zoom contract, in full (AC-4). Each observable is asserted independently, so
+  // deleting any ONE of the handler's altitude-dependent setters goes red on its own.
   const zoom = JSON.parse(await ev(send, `(async()=>{
-    const rd=()=>{const f=globe.pointRadius();return typeof f==='function'?+f({size:1}).toFixed(6):f};
+    const pr=()=>{const f=globe.pointRadius();return typeof f==='function'?+f({size:1}).toFixed(6):f};
+    const as=()=>{const f=globe.arcStroke();return typeof f==='function'?+f({stroke:1}).toFixed(6):f};
+    const ls=()=>{const f=globe.labelSize();return typeof f==='function'?+f({size:1}).toFixed(6):f};
+    const set=async a=>{globe.pointOfView({altitude:a},0);await new Promise(r=>setTimeout(r,700))};
+    const src=[...document.querySelectorAll('script')].map(x=>x.textContent).join('');
+    const m=src.match(/const ZOOM_EPSILON\\s*=\\s*([0-9.]+)/);
     const wasRot=globe.controls().autoRotate; globe.controls().autoRotate=false;
-    globe.pointOfView({altitude:1.79},0); await new Promise(r=>setTimeout(r,700)); const a=rd();
-    globe.pointOfView({altitude:1.81},0); await new Promise(r=>setTimeout(r,700)); const b=rd();
+    // first callback after a fresh registration must run even for a SUB-epsilon step
+    await set(1.5); plotMarkers(); await new Promise(r=>setTimeout(r,700));
+    const p0=pr(); await set(1.502); const p1=pr();
+    // and once warm, a sub-epsilon step must be suppressed (the guard is live)
+    await set(1.5035); const p2=pr();
+    // the fixed 0.02 step must move all three accessors, and cross the label boundary both ways
+    await set(1.79); const a={p:pr(),s:as(),l:ls()};
+    await set(1.81); const b={p:pr(),s:as(),l:ls()};
+    await set(1.79); const c={p:pr(),s:as(),l:ls()};
     globe.controls().autoRotate=wasRot;
-    return JSON.stringify({a,b})})()`));
-  must(zoom.a !== zoom.b, `zoom is dead: pointRadius unchanged across 1.79 -> 1.81 (${zoom.a})`);
+    return JSON.stringify({eps:m?parseFloat(m[1]):null,firstCb:p0!==p1,warmSuppressed:p1===p2,a,b,c})})()`));
+  must(typeof zoom.eps === 'number' && zoom.eps < 0.02, `ZOOM_EPSILON is ${zoom.eps}, must be < 0.02`);
+  must(zoom.firstCb, 'first callback after a fresh plotMarkers() registration was swallowed');
+  must(zoom.warmSuppressed, 'a warm sub-epsilon step was NOT suppressed — the guard is not live');
+  must(zoom.a.p !== zoom.b.p && zoom.b.p !== zoom.c.p, `pointRadius does not track zoom (${zoom.a.p}/${zoom.b.p}/${zoom.c.p})`);
+  must(zoom.a.s !== zoom.b.s && zoom.b.s !== zoom.c.s, `arcStroke does not track zoom (${zoom.a.s}/${zoom.b.s}/${zoom.c.s})`);
+  must(zoom.a.l > 0 && zoom.b.l === 0 && zoom.c.l > 0, `label visibility does not cross alt<1.8 both ways (${zoom.a.l}/${zoom.b.l}/${zoom.c.l})`);
 
   const p = JSON.parse(await ev(send, PACE));
   meds.push(p.med);
   console.log(`  run ${r + 1}/${ROUNDS}  median ${p.med}ms  frames>33ms ${p.over33}/${FRAMES}  ` +
-              `arcs=${scene.arcs}/${scene.labelled} res=${scene.res} rot=${scene.autoRotate} zoom=${zoom.a}->${zoom.b}`);
+              `arcs=${scene.arcs}/${scene.labelled} res=${scene.res} rot=${scene.autoRotate} ` +
+              `eps=${zoom.eps} firstCb=${zoom.firstCb} warmSup=${zoom.warmSuppressed} ` +
+              `pr=${zoom.a.p}->${zoom.b.p} as=${zoom.a.s}->${zoom.b.s} ls=${zoom.a.l}->${zoom.b.l}`);
 }
 const sorted = [...meds].sort((a, b) => a - b);
 const upperMedian = sorted[Math.floor(sorted.length / 2)];
