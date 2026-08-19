@@ -83,11 +83,108 @@ describe('every in-scope adapter reports an HTTP 200 whose body is an error', ()
   }
 });
 
-describe('no in-scope adapter reports on a healthy body', () => {
+// A healthy fixture must also prove the adapter still PARSES. Asserting only the absence
+// of `error` would pass an adapter whose success parser had been deleted (AC-8).
+const HEALTHY_FIELD = {
+  adsb: (p) => p.status === 'live' || p.status === 'no_key',
+  bluesky: (p) => !!p.topics,
+  'cloudflare-radar': (p) => !!p.attacks || !!p.outages,
+  comtrade: (p) => Array.isArray(p.tradeFlows),
+  eia: (p) => !!p.oilPrices,
+  epa: (p) => typeof p.totalReadings === 'number',
+  firms: (p) => Array.isArray(p.hotspots),
+  fred: (p) => Array.isArray(p.indicators) && p.indicators.length > 0,
+  gdelt: (p) => typeof p.totalArticles === 'number',
+  gscpi: (p) => p.latest !== undefined,
+  kiwisdr: (p) => typeof p.totalReceivers === 'number' || Array.isArray(p.receivers) || !!p.status,
+  ofac: (p) => !!p.sdnList,
+  opensanctions: (p) => Array.isArray(p.recentSearches),
+  patents: (p) => typeof p.totalFound === 'number',
+  reddit: (p) => !!p.subreddits || p.status === 'no_key',
+  reliefweb: (p) => Array.isArray(p.latestReports) || Array.isArray(p.activeDisasters),
+  safecast: (p) => Array.isArray(p.sites),
+  space: (p) => Array.isArray(p.recentLaunches),
+  telegram: (p) => Array.isArray(p.channels) || typeof p.posts === 'number',
+  treasury: (p) => Array.isArray(p.debt) || Array.isArray(p.interestRates),
+  usaspending: (p) => Array.isArray(p.recentDefenseContracts),
+  who: (p) => Array.isArray(p.outbreaks) || p.outbreakError === null,
+  yfinance: (p) => !!p.quotes,
+};
+
+describe('no in-scope adapter reports on a healthy body, and each still parses', () => {
   for (const name of ADAPTERS) {
     test(name, async () => {
       globalThis.fetch = async () => (HEALTHY[name] ?? defaultHealthy)();
-      assert.equal(hasError(await brief(name)), false, `${name} reported an error on a valid body`);
+      const p = await brief(name);
+      assert.equal(hasError(p), false, `${name} reported an error on a valid body`);
+      assert.ok(HEALTHY_FIELD[name](p), `${name} produced no normal parsed field — success parser broken?`);
+    });
+  }
+});
+
+// AC-1 requires timeout/network proof for adapters that call fetch directly, since each has
+// its own try/catch rather than inheriting safeFetch's error envelope.
+const RAW_FETCH = ['firms', 'gscpi', 'kiwisdr', 'ofac', 'reddit', 'reliefweb', 'telegram', 'usaspending', 'who'];
+
+describe('raw-fetch adapters report a network rejection', () => {
+  for (const name of RAW_FETCH) {
+    test(name, async () => {
+      globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+      assert.ok(hasError(await brief(name)), `${name} swallowed a network rejection`);
+    });
+  }
+});
+
+// Every heterogeneous required path, failed INDEPENDENTLY. Selection is by call index
+// (deterministic under Promise.all), but each assertion is semantic: the failure must be
+// reported AND the peers that succeeded must survive.
+const MULTI_PATH = {
+  eia: { calls: 4, survives: (p) => !!p.oilPrices },
+  epa: { calls: 4, survives: (p) => typeof p.totalReadings === 'number' },
+  ofac: { calls: 2, survives: (p) => !!p.sdnList && !!p.advancedList },
+  opensanctions: { calls: 7, survives: (p) => Array.isArray(p.recentSearches) && p.recentSearches.length > 0 },
+  treasury: { calls: 2, survives: (p) => Array.isArray(p.debt) || Array.isArray(p.interestRates) },
+  space: { calls: 5, survives: (p) => Array.isArray(p.recentLaunches) },
+  'cloudflare-radar': { calls: 4, survives: (p) => !!p.outages || !!p.attacks || !!p.anomalies },
+  reliefweb: { calls: 2, survives: (p) => !!p.hdxDatasets || Array.isArray(p.activeDisasters) || Array.isArray(p.latestReports) },
+  usaspending: { calls: 2, survives: (p) => Array.isArray(p.recentDefenseContracts) || Array.isArray(p.topAgencies) },
+};
+
+describe('each required path fails independently, and its peers survive', () => {
+  for (const [name, spec] of Object.entries(MULTI_PATH)) {
+    for (let pos = 1; pos <= spec.calls; pos++) {
+      test(`${name}: path ${pos} of ${spec.calls}`, async () => {
+        let n = 0;
+        globalThis.fetch = async () => {
+          n += 1;
+          return n === pos ? fail418() : (HEALTHY[name] ?? defaultHealthy)();
+        };
+        const p = await brief(name);
+        assert.ok(hasError(p), `${name} hid a failure of path ${pos}`);
+        assert.ok(spec.survives(p), `${name} discarded surviving peers when path ${pos} failed`);
+        // Universal retention proxy: a failed path must not collapse the payload to a bare
+        // {source, timestamp, status, error} envelope — that is how space discarded three
+        // live feeds (Judge H-11) while still reporting the failure correctly.
+        const envelope = new Set(['source', 'timestamp', 'status', 'error']);
+        const payloadKeys = Object.keys(p).filter(k => !envelope.has(k));
+        assert.ok(payloadKeys.length > 0,
+          `${name} collapsed to an error envelope when path ${pos} failed — no payload survived`);
+      });
+    }
+  }
+});
+
+describe('cloudflare attack dimensions fail independently', () => {
+  // Judge H-13: reporting only when NEITHER dimension survived presented half an attack
+  // summary as healthy.
+  const good = () => json({ result: { annotations: [], summary_0: { a: 1 }, top_0: [], serie_0: {} }, success: true });
+  for (const dim of ['protocol', 'vector']) {
+    test(`${dim} fails, the other survives`, async () => {
+      globalThis.fetch = async (u) => String(u).includes(`summary/${dim}`) ? fail418() : good();
+      const p = await brief('cloudflare-radar');
+      assert.ok(hasError(p), `a failed ${dim} dimension must report`);
+      const kept = Object.keys(p.attacks || {}).filter(k => k !== 'error');
+      assert.ok(kept.length > 0, `the surviving attack dimension was discarded (kept: ${kept})`);
     });
   }
 });

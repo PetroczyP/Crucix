@@ -71,6 +71,14 @@ async function fetchAttackSummary() {
     return { error: byProtocol.error || byVector.error || 'No attack data returned' };
   }
 
+  // A ONE-SIDED failure is still an incomplete delivery: reporting only when neither
+  // dimension survives presented a half attack summary as healthy (Judge H-13). The
+  // surviving dimension is kept; the failed one is named.
+  const attackErrors = [];
+  if (!result.byProtocol) attackErrors.push(`protocol: ${byProtocol.error || 'no data returned'}`);
+  if (!result.byVector) attackErrors.push(`vector: ${byVector.error || 'no data returned'}`);
+  if (attackErrors.length) result.error = attackErrors.join('; ');
+
   return result;
 }
 
@@ -221,7 +229,10 @@ export async function briefing() {
       total: anomalyList.length,
       events: anomalyList.slice(0, 20),
     },
-    attacks: attacks?.error ? { error: attacks.error } : attacks,
+    // Pass the attack summary through whole: it now carries its own `error` for a failed
+    // dimension, and replacing it with just that error discarded the dimension that
+    // SURVIVED (Judge H-13, retention clause).
+    attacks,
     signals,
   };
 }
