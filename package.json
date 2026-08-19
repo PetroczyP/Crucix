@@ -14,7 +14,8 @@
     "diag": "node diag.mjs",
     "clean": "node scripts/clean.mjs",
     "fresh-start": "npm run clean && npm start",
-    "perf:globe": "node scripts/perf/globe-frame-time.mjs"
+    "perf:globe": "node scripts/perf/globe-frame-time.mjs",
+    "check:source-health": "node scripts/check/source-health-dom.mjs"
   },
   "keywords": [
     "osint",
