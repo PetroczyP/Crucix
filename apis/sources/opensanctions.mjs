@@ -72,15 +72,18 @@ const BRIEFING_QUERIES = [
 // Briefing — search for notable sanctioned entities across key targets
 export async function briefing() {
   // Run searches in parallel
+  const errors = [];
   const results = await Promise.all(
     BRIEFING_QUERIES.map(async (query) => {
       const data = await searchEntities(query, { limit: 10, topics: 'sanction' });
+      if (data?.error) errors.push(`${query}: ${data.error}`);
       return compactSearchResult(data, query);
     })
   );
 
   // Also fetch dataset metadata for context
   const collections = await getCollections();
+  if (collections?.error) errors.push(`collections: ${collections.error}`);
   const datasetSummary = Array.isArray(collections)
     ? collections.slice(0, 10).map(c => ({
         name: c.name,
@@ -98,6 +101,7 @@ export async function briefing() {
   return {
     source: 'OpenSanctions',
     timestamp: new Date().toISOString(),
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     recentSearches: results,
     totalSanctionedEntities,
     datasets: datasetSummary,

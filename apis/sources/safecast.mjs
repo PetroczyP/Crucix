@@ -38,6 +38,7 @@ const NUCLEAR_SITES = {
 
 // Briefing — check radiation levels near key nuclear sites
 export async function briefing() {
+  const errors = [];
   const results = await Promise.all(
     Object.entries(NUCLEAR_SITES).map(async ([key, site]) => {
       const data = await getMeasurements({
@@ -46,6 +47,7 @@ export async function briefing() {
         distance: site.radius,
         limit: 10,
       });
+      if (data?.error) errors.push(`${site.label}: ${data.error}`);
 
       const measurements = Array.isArray(data) ? data : [];
       const values = measurements.map(m => m.value).filter(v => typeof v === 'number');
@@ -69,10 +71,13 @@ export async function briefing() {
   return {
     source: 'Safecast',
     timestamp: new Date().toISOString(),
+    // Surface upstream failures rather than reporting a confident all-clear —
+    // this is a radiation monitor, a false "normal" is the worst outcome.
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     sites: results,
     signals: anomalies.length > 0
       ? anomalies.map(a => `ELEVATED RADIATION at ${a.site}: ${a.avgCPM?.toFixed(1)} CPM (normal: 10-80)`)
-      : ['All monitored nuclear sites within normal radiation levels'],
+      : (errors.length ? [] : ['All monitored nuclear sites within normal radiation levels']),
   };
 }
 

@@ -49,9 +49,11 @@ export async function briefing() {
 
   const allPosts = [];
   const topicResults = {};
+  const errors = [];
 
   for (const { label, q } of searchQueries) {
     const result = await searchPosts(q, { limit: 25 });
+    if (result?.error) errors.push(`${label}: ${result.error}`);
     const posts = (result?.posts || []).map(compactPost);
     topicResults[label] = posts;
     allPosts.push(...posts);
@@ -62,6 +64,8 @@ export async function briefing() {
   return {
     source: 'Bluesky',
     timestamp: new Date().toISOString(),
+    // Surface upstream failures rather than silently returning fewer posts.
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     topics: {
       conflict: topicResults.conflict || [],
       markets: topicResults.markets || [],

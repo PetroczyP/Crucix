@@ -98,6 +98,8 @@ export async function briefing() {
   );
 
   const articles = (all?.articles || []).map(compactArticle);
+  // Events request is required — geo (below) is explicitly optional and does
+  // not affect this.
 
   // Categorize by keyword matching in titles
   const categorize = (keywords) => articles.filter(a =>
@@ -121,6 +123,7 @@ export async function briefing() {
   return {
     source: 'GDELT',
     timestamp: new Date().toISOString(),
+    ...(all?.error ? { error: all.error } : {}),
     totalArticles: articles.length,
     allArticles: articles,
     geoPoints,

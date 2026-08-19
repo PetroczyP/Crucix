@@ -110,6 +110,9 @@ export async function collect() {
 
   // Categorize for easy dashboard consumption
   return {
+    // Aggregate top-level error derived from the existing per-symbol failure
+    // count — per-symbol failure identity and `unknown` keying are unchanged.
+    ...(failed > 0 ? { error: `${failed}/${symbols.length} symbols failed to fetch` } : {}),
     quotes,
     summary: {
       totalSymbols: symbols.length,

@@ -45,6 +45,10 @@ export async function briefing() {
     getAvgInterestRates(),
   ]);
 
+  const errors = [];
+  if (debt?.error) errors.push(`debt: ${debt.error}`);
+  if (rates?.error) errors.push(`rates: ${rates.error}`);
+
   const debtData = debt?.data || [];
   const latestDebt = debtData[0];
   const signals = [];
@@ -59,6 +63,7 @@ export async function briefing() {
   return {
     source: 'US Treasury',
     timestamp: new Date().toISOString(),
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     debt: debtData.slice(0, 5).map(d => ({
       date: d.record_date,
       totalDebt: d.tot_pub_debt_out_amt,

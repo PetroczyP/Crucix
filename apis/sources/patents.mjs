@@ -120,9 +120,10 @@ function compactPatent(p) {
 }
 
 // Search a single domain, combining its keyword terms
-async function searchDomain(domain, since) {
+async function searchDomain(domain, since, errors) {
   const terms = domain.terms.join(' ');
   const data = await searchPatents(terms, { since, limit: 10 });
+  if (data?.error) errors.push(`${domain.label}: ${data.error}`);
 
   // PatentsView v1 returns { patents: [...] } or similar
   const patents = data?.patents || data?.results || [];
@@ -136,11 +137,12 @@ export async function briefing() {
   const domainEntries = Object.entries(STRATEGIC_DOMAINS);
   const recentPatents = {};
   const signals = [];
+  const errors = [];
 
   // Run all domain searches in parallel
   const results = await Promise.all(
     domainEntries.map(async ([key, domain]) => {
-      const patents = await searchDomain(domain, since);
+      const patents = await searchDomain(domain, since, errors);
       return { key, label: domain.label, patents };
     })
   );
@@ -186,12 +188,15 @@ export async function briefing() {
   return {
     source: 'USPTO Patents',
     timestamp: new Date().toISOString(),
+    // Surface upstream failures rather than reporting a confident all-clear.
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     searchWindow: `${since} to ${new Date().toISOString().split('T')[0]}`,
     totalFound,
     recentPatents,
     signals: signals.length > 0
       ? signals
-      : ['No unusual patent filing patterns detected in strategic domains'],
+      // Don't claim "no unusual activity" when we couldn't fully check.
+      : (errors.length ? [] : ['No unusual patent filing patterns detected in strategic domains']),
     domains: Object.fromEntries(
       domainEntries.map(([key, domain]) => [key, domain.label])
     ),

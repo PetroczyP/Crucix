@@ -127,9 +127,11 @@ function checkReading(reading) {
 export async function briefing() {
   const readings = [];
   const signals = [];
+  const errors = [];
 
   // Fetch recent analytical results (broad pull)
   const recentData = await getAnalyticalResults({ rows: 100 });
+  if (recentData?.error) errors.push(`recent: ${recentData.error}`);
   const recentRecords = Array.isArray(recentData) ? recentData : [];
 
   // Compact all readings
@@ -140,6 +142,7 @@ export async function briefing() {
   const analyteResults = await Promise.all(
     ['GROSS BETA', 'IODINE-131', 'CESIUM-137'].map(async analyte => {
       const data = await getResultsByAnalyte(analyte, { rows: 20 });
+      if (data?.error) errors.push(`${analyte}: ${data.error}`);
       const records = Array.isArray(data) ? data : [];
       return { analyte, records: records.map(compactReading) };
     })
@@ -196,12 +199,15 @@ export async function briefing() {
   return {
     source: 'EPA RadNet',
     timestamp: new Date().toISOString(),
+    // Surface upstream failures rather than reporting a confident all-clear.
+    ...(errors.length ? { error: errors.join('; ') } : {}),
     totalReadings: readings.length,
     readings: readings.slice(0, 50), // cap for briefing size
     stateSummary,
     signals: signals.length > 0
       ? signals
-      : ['All EPA RadNet readings within normal background levels'],
+      // Don't claim "normal" when we couldn't fully check.
+      : (errors.length ? [] : ['All EPA RadNet readings within normal background levels']),
     monitoredAnalytes: KEY_ANALYTES,
     thresholds: THRESHOLDS,
     note: 'RadNet data may lag by hours to days. Near-real-time gamma data updates more frequently.',
