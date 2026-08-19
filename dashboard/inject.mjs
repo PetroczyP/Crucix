@@ -539,8 +539,12 @@ export async function synthesize(data) {
     }))
   };
 
-  const health = Object.entries(data.sources).map(([name, src]) => ({
-    n: name, err: Boolean(src.error), stale: Boolean(src.stale)
+  // Built from `timing`, which carries every source every sweep. `sources` only ever held
+  // survivors, so a failed source vanished from the grid instead of showing as failed —
+  // and lib/delta/engine.mjs's source_degradation signal could never fire. Reading the
+  // normalised status also catches adapters that report failure as `message` (issue 006).
+  const health = Object.entries(data.timing || {}).map(([name, t]) => ({
+    n: name, err: t.status === 'error', stale: Boolean(data.sources?.[name]?.stale)
   }));
 
   // === Yahoo Finance live market data ===

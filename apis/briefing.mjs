@@ -58,7 +58,14 @@ export async function runSource(name, fn, ...args) {
       timer = setTimeout(() => reject(new Error(`Source ${name} timed out after ${SOURCE_TIMEOUT_MS / 1000}s`)), SOURCE_TIMEOUT_MS);
     });
     const data = await Promise.race([dataPromise, timeoutPromise]);
-    return { name, status: 'ok', durationMs: Date.now() - start, data };
+    // safeFetch resolves rather than throws for operational failures, so a dead upstream
+    // arrives here as a normal value. Without inspecting it, no source can ever be marked
+    // error from a data-level failure — issue 006. Configured absence (status:'no_key' and
+    // friends) sets no `error`, so it stays 'ok'. The payload is kept either way.
+    const failed = typeof data?.error === 'string' && data.error !== '';
+    return failed
+      ? { name, status: 'error', durationMs: Date.now() - start, error: data.error, data }
+      : { name, status: 'ok', durationMs: Date.now() - start, data };
   } catch (e) {
     return { name, status: 'error', durationMs: Date.now() - start, error: e.message };
   } finally {
@@ -129,8 +136,11 @@ export async function fullBriefing() {
       sourcesOk: sources.filter(s => s.status === 'ok').length,
       sourcesFailed: sources.filter(s => s.status !== 'ok').length,
     },
+    // Keyed on payload presence, not status: an errored source keeps whatever it did
+    // obtain, so honest status cannot delete partial data. Sources that threw or timed
+    // out have no `data` and are still excluded, exactly as before.
     sources: Object.fromEntries(
-      sources.filter(s => s.status === 'ok').map(s => [s.name, s.data])
+      sources.filter(s => s.data !== undefined).map(s => [s.name, s.data])
     ),
     errors: sources.filter(s => s.status !== 'ok').map(s => ({ name: s.name, error: s.error })),
     timing: Object.fromEntries(
