@@ -101,13 +101,19 @@ export async function briefing() {
     getDisasters({ limit: 15 }),
   ]);
 
-  const rwFailed = !!reports?.error || !!disasters?.error;
+  // ReliefWeb is deliberately NOT a fallback chain: reports and disasters are
+  // two independently-required peers run in parallel. Either one failing
+  // means the briefing did not fully deliver, but it must never cost us the
+  // peer that DID succeed.
+  const reportsFailed = !!reports?.error;
+  const disastersFailed = !!disasters?.error;
+  const rwFailed = reportsFailed || disastersFailed;
 
   let latestReports = [];
   let activeDisasters = [];
   let hdxDatasets = [];
 
-  if (!rwFailed) {
+  if (!reportsFailed) {
     latestReports = (reports?.data || []).map(r => ({
       title: r.fields?.title,
       date: r.fields?.date?.created,
@@ -118,6 +124,8 @@ export async function briefing() {
         ? `https://reliefweb.int${r.fields.url_alias}`
         : null,
     }));
+  }
+  if (!disastersFailed) {
     activeDisasters = (disasters?.data || []).map(d => ({
       name: d.fields?.name,
       date: d.fields?.date?.created,
@@ -125,24 +133,30 @@ export async function briefing() {
       type: d.fields?.type?.map(t => t.name),
       status: d.fields?.status,
     }));
-  } else {
-    // Fallback to HDX when ReliefWeb returns 403 (unapproved appname)
+  }
+  if (rwFailed) {
+    // HDX is ADDITIONAL fallback data for the failed peer — it supplements,
+    // it never erases the error or the peer that succeeded.
     hdxDatasets = await hdxFallback(15);
   }
 
+  const rwErrorMessage = [reportsFailed ? reports.error : null, disastersFailed ? disasters.error : null]
+    .filter(Boolean)
+    .join('; ');
+
   return {
-    source: rwFailed ? 'HDX (Humanitarian Data Exchange) — ReliefWeb fallback' : 'ReliefWeb (UN OCHA)',
+    source: rwFailed ? 'ReliefWeb (UN OCHA) + HDX (fallback for failed peer)' : 'ReliefWeb (UN OCHA)',
     timestamp: new Date().toISOString(),
     ...(rwFailed
       ? {
-          rwError: reports?.error || disasters?.error,
+          error: rwErrorMessage,
+          rwError: rwErrorMessage,
           rwNote: 'ReliefWeb API requires an approved appname since Nov 2025. Set RELIEFWEB_APPNAME env var after registering at https://apidoc.reliefweb.int/parameters#appname',
           hdxDatasets,
         }
-      : {
-          latestReports,
-          activeDisasters,
-        }),
+      : {}),
+    latestReports,
+    activeDisasters,
   };
 }
 

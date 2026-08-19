@@ -133,7 +133,16 @@ async function fetchHTML(url, timeoutMs = 15000) {
     });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    const text = await res.text();
+    // t.me can return HTTP 200 with a JSON error body (rate limiting, etc.)
+    // instead of the expected page — parseWebPreview would silently read
+    // that as "0 posts found" rather than a fetch failure. HTML pages never
+    // start with '{' or '[', so sniff for a JSON body first.
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      throw new Error('Unexpected JSON response instead of HTML');
+    }
+    return text;
   } catch (e) {
     clearTimeout(timer);
     return null;
@@ -363,6 +372,13 @@ export async function briefing() {
     byTopic: topicSummary,
     channels: channelSummaries,
     errors: errors.length > 0 ? errors : undefined,
+    // This is where the Bot API -> scrape fallback chain resolves (a failed
+    // Bot API attempt above falls through here silently, per contract: only
+    // the resolved outcome reports). Surface unreachable channels here,
+    // beside the channels/posts that DID come back.
+    ...(errors.length > 0
+      ? { error: `${errors.length}/${channelSummaries.length} channel(s) unreachable: ${errors.map(e => `${e.channel} (${e.error})`).join('; ')}` }
+      : {}),
     topPosts: allPosts.slice(0, 15),
     hint: token
       ? undefined

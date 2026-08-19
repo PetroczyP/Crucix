@@ -42,7 +42,13 @@ export async function getOutbreakNews() {
     }
 
     const data = await res.json();
-    const items = data?.value || [];
+    // A 200 response whose body is an error object (rate limit, backend
+    // failure) has no `.value` array — `data?.value || []` would silently
+    // read that as "zero outbreaks" rather than surfacing the failure.
+    if (!Array.isArray(data?.value)) {
+      throw new Error(data?.error || data?.message || 'Unexpected response shape (missing value array)');
+    }
+    const items = data.value;
 
     // Sort by PublicationDate descending (server ignores $orderby)
     items.sort((a, b) => {
@@ -78,6 +84,10 @@ export async function briefing() {
     timestamp: new Date().toISOString(),
     diseaseOutbreakNews: Array.isArray(outbreaks) ? outbreaks.slice(0, 15) : [],
     outbreakError: Array.isArray(outbreaks) ? null : outbreaks.error,
+    // Top-level error per the shared adapter contract. outbreakError above is
+    // kept as-is (verified nothing else reads it) — this is the field a
+    // caller checking for a single `error` field actually sees.
+    ...(Array.isArray(outbreaks) ? {} : { error: outbreaks.error }),
     monitoringCapabilities: [
       'Disease Outbreak News (DONs)',
       'Global health indicators (GHO)',

@@ -136,6 +136,7 @@ export async function briefing() {
 
   const tradeFlows = [];
   const signals = [];
+  const failures = [];
 
   for (const reporter of keyReporters) {
     for (const cmdCode of keyCommodities) {
@@ -150,17 +151,28 @@ export async function briefing() {
       // Comtrade returns data in different structures; normalize
       let records = data?.data || data?.dataset || [];
       if (!Array.isArray(records)) records = [];
+      const currentYearError = data?.error || null;
 
       // If no current year data, try previous year
       if (records.length === 0) {
-        data = await getTradeData({
+        const prevData = await getTradeData({
           reporterCode: reporter,
           cmdCode,
           period: prevYear,
           flowCode: 'M',
         });
-        records = data?.data || data?.dataset || [];
-        if (!Array.isArray(records)) records = [];
+        let prevRecords = prevData?.data || prevData?.dataset || [];
+        if (!Array.isArray(prevRecords)) prevRecords = [];
+        records = prevRecords;
+
+        // Only a real failure when BOTH the current-year and previous-year
+        // attempts errored — a legitimate "no data this year" is not a failure.
+        if (currentYearError && prevData?.error) {
+          failures.push(
+            `${COUNTRIES[reporter] || reporter}/${STRATEGIC_COMMODITIES[cmdCode] || cmdCode}: ` +
+            `${currentYearError}; fallback ${prevYear}: ${prevData.error}`
+          );
+        }
       }
 
       const compact = records.slice(0, 10).map(compactRecord);
@@ -183,10 +195,15 @@ export async function briefing() {
   return {
     source: 'UN Comtrade',
     timestamp: new Date().toISOString(),
+    ...(failures.length > 0 ? { error: failures.join(' | ') } : {}),
     tradeFlows,
+    // The reassuring fallback must not fire when we could not reach Comtrade at all —
+    // a false all-clear is the defect this issue exists to remove (issue 006).
     signals: signals.length > 0
       ? signals
-      : ['No significant trade anomalies detected in sampled commodities'],
+      : (failures.length > 0
+          ? []
+          : ['No significant trade anomalies detected in sampled commodities']),
     status: tradeFlows.length > 0 ? 'ok' : 'no_data',
     note: 'Comtrade data often lags 1-2 months. Recent periods may be incomplete.',
     coveredCommodities: STRATEGIC_COMMODITIES,

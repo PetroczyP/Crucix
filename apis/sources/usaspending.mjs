@@ -91,6 +91,10 @@ export async function briefing() {
     getAgencySpending(),
   ]);
 
+  const errors = [];
+  if (defense?.error) errors.push(`defense: ${defense.error}`);
+  if (agencies?.error) errors.push(`agencies: ${agencies.error}`);
+
   return {
     source: 'USAspending',
     timestamp: new Date().toISOString(),
@@ -109,6 +113,7 @@ export async function briefing() {
       obligations: a.obligated_amount,
       outlays: a.outlay_amount,
     })),
+    ...(errors.length > 0 ? { error: errors.join('; ') } : {}),
     ...(defense?.error ? { defenseError: defense.error } : {}),
   };
 }

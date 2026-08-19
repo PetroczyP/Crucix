@@ -91,7 +91,8 @@ export async function briefing(apiKey) {
   if (!apiKey) {
     return {
       source: 'EIA',
-      error: 'No EIA API key. Register free at https://www.eia.gov/opendata/register.php',
+      status: 'no_key',
+      message: 'No EIA API key. Register free at https://www.eia.gov/opendata/register.php',
       hint: 'Set EIA_API_KEY environment variable',
       timestamp: new Date().toISOString(),
     };
@@ -103,6 +104,15 @@ export async function briefing(apiKey) {
     fetchSeries(apiKey, GAS_SERIES.henryHub),
     fetchSeries(apiKey, INVENTORY_SERIES.crudeStocks),
   ]);
+
+  // The four requests are independent; extractLatest() already turns a
+  // failed one into a quiet null below. Name which one(s) failed so the
+  // orchestrator can see it, while the other three stay populated.
+  const failedSeries = [];
+  if (wtiResp?.error) failedSeries.push(`wti: ${wtiResp.error}`);
+  if (brentResp?.error) failedSeries.push(`brent: ${brentResp.error}`);
+  if (gasResp?.error) failedSeries.push(`henryHub: ${gasResp.error}`);
+  if (inventoryResp?.error) failedSeries.push(`crudeStocks: ${inventoryResp.error}`);
 
   const signals = [];
 
@@ -139,6 +149,7 @@ export async function briefing(apiKey) {
   return {
     source: 'EIA',
     timestamp: new Date().toISOString(),
+    ...(failedSeries.length ? { error: failedSeries.join('; ') } : {}),
     oilPrices: {
       wti: wti ? { ...wti, label: OIL_SERIES.wti.label, recent: wtiRecent } : null,
       brent: brent ? { ...brent, label: OIL_SERIES.brent.label, recent: brentRecent } : null,

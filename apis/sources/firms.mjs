@@ -42,6 +42,19 @@ async function fetchFires(opts = {}) {
     clearTimeout(timer);
     if (!res.ok) return { error: `HTTP ${res.status}` };
     const text = await res.text();
+    // FIRMS can return HTTP 200 with a JSON error body (invalid key, quota
+    // exceeded) instead of CSV — parseCSV would silently read that single
+    // line as "no rows". A CSV row never starts with '{', so sniff for a
+    // JSON body before parsing.
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      let msg = 'Unexpected JSON response instead of CSV';
+      try {
+        const parsed = JSON.parse(trimmed);
+        msg = parsed?.error || parsed?.message || msg;
+      } catch { /* keep default msg */ }
+      return { error: msg };
+    }
     return parseCSV(text);
   } catch (e) {
     clearTimeout(timer);
@@ -124,6 +137,11 @@ export async function briefing() {
     return analyzeFires(r.fires, r.label);
   });
 
+  // Surface per-hotspot failures at the top level — a caller checking for a
+  // single `error` field would otherwise see a healthy-looking response even
+  // when every hotspot request failed.
+  const failedHotspots = hotspots.filter(h => h.error);
+
   // Generate signals
   const signals = [];
   for (const h of hotspots) {
@@ -141,6 +159,12 @@ export async function briefing() {
     status: 'active',
     hotspots,
     signals,
+    // One error per failed hotspot already sits on that hotspot's entry
+    // above; also bubble a combined message to the top level so a caller
+    // checking only `error` doesn't miss it.
+    ...(failedHotspots.length > 0
+      ? { error: `${failedHotspots.length}/${hotspots.length} hotspot(s) failed: ${failedHotspots.map(h => `${h.region} (${h.error})`).join('; ')}` }
+      : {}),
   };
 }
 

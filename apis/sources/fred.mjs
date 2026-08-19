@@ -57,7 +57,9 @@ export async function briefing(apiKey) {
   if (!apiKey) {
     return {
       source: 'FRED',
-      error: 'No FRED API key. Get one free at https://fred.stlouisfed.org/docs/api/api_key.html',
+      timestamp: new Date().toISOString(),
+      status: 'no_key',
+      message: 'No FRED API key. Get one free at https://fred.stlouisfed.org/docs/api/api_key.html',
       hint: 'Set FRED_API_KEY environment variable',
     };
   }
@@ -66,6 +68,9 @@ export async function briefing(apiKey) {
   const results = await Promise.all(
     entries.map(async ([id, label]) => {
       const data = await getSeriesLatest(id, apiKey);
+      // A failed fetch and a series with no recent observation both yield value:null and
+      // are then filtered out of `indicators` below — indistinguishable without this.
+      if (data?.error) return { id, label, value: null, date: null, recent: [], error: data.error };
       const obs = data?.observations;
       if (!obs?.length) return { id, label, value: null, date: null, recent: [] };
       const latest = obs.find(o => o.value !== '.');
@@ -94,9 +99,16 @@ export async function briefing(apiKey) {
   if (vix !== null && vix > 40) signals.push(`VIX EXTREME at ${vix} — crisis-level fear`);
   if (hySpread !== null && hySpread > 5) signals.push(`HIGH YIELD SPREAD WIDE at ${hySpread}% — credit stress`);
 
+  // Surface which series failed while keeping every series that succeeded (issue 006).
+  const failedSeries = results.filter(r => r.error);
+
   return {
     source: 'FRED',
     timestamp: new Date().toISOString(),
+    ...(failedSeries.length
+      ? { error: `${failedSeries.length}/${results.length} series failed: ` +
+                 failedSeries.map(r => `${r.id} (${r.error})`).join('; ') }
+      : {}),
     indicators: results.filter(r => r.value !== null),
     signals,
   };

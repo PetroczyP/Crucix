@@ -155,8 +155,13 @@ async function fetchPublicFeed() {
   return data;
 }
 
-// Get military aircraft from available sources
+// Get military aircraft from available sources.
+// Returns an array (even empty) when ANY transport succeeded — a healthy feed
+// reporting zero military aircraft airborne is a real "quiet" read, not a
+// failure. Returns { error } ONLY when EVERY transport failed.
 export async function getMilitaryAircraft(apiKey) {
+  const errors = [];
+
   // Try RapidAPI first if key available
   if (apiKey) {
     const data = await fetchViaRapidApi(apiKey);
@@ -166,6 +171,7 @@ export async function getMilitaryAircraft(apiKey) {
         return aircraft.map(classifyAircraft).filter(a => a.isMilitary);
       }
     }
+    errors.push(`RapidAPI: ${data?.error || 'no usable data'}`);
   }
 
   // Try public feed
@@ -176,8 +182,9 @@ export async function getMilitaryAircraft(apiKey) {
       return aircraft.map(classifyAircraft).filter(a => a.isMilitary);
     }
   }
+  errors.push(`public feed: ${pubData?.error || 'no usable data'}`);
 
-  return null; // all sources failed
+  return { error: errors.join('; ') }; // all sources failed
 }
 
 // Get all aircraft in a geographic bounding box via RapidAPI
@@ -208,10 +215,12 @@ export async function getAircraftInArea(lat, lon, radiusNm = 250, apiKey) {
 // Briefing — attempt to get military flight data, document what's available
 export async function briefing() {
   const apiKey = process.env.ADSB_API_KEY || process.env.RAPIDAPI_KEY || null;
-  const militaryAircraft = await getMilitaryAircraft(apiKey);
+  const result = await getMilitaryAircraft(apiKey);
 
-  // If we got data, analyze it
-  if (militaryAircraft && militaryAircraft.length > 0) {
+  // If any transport succeeded, analyze it — an empty array is a real
+  // "quiet" read (no military aircraft airborne), not a failure.
+  if (Array.isArray(result)) {
+    const militaryAircraft = result;
     // Group by military match type
     const byCountry = {};
     const reconAircraft = [];
@@ -268,11 +277,12 @@ export async function briefing() {
     };
   }
 
-  // No data available — return stub with integration documentation
+  // Every transport failed — return stub with integration documentation, and report the failure
   return {
     source: 'ADS-B Exchange',
     timestamp: new Date().toISOString(),
     status: apiKey ? 'error' : 'no_key',
+    error: result?.error || 'ADS-B Exchange transports failed',
     militaryAircraft: [],
     message: apiKey
       ? 'ADS-B Exchange API returned no data. The endpoint may be temporarily unavailable.'

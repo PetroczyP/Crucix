@@ -140,6 +140,7 @@ export async function briefing() {
       source: 'KiwiSDR',
       timestamp: new Date().toISOString(),
       status: 'error',
+      error: raw.error,
       message: raw.error,
     };
   }
@@ -160,6 +161,7 @@ export async function briefing() {
       source: 'KiwiSDR',
       timestamp: new Date().toISOString(),
       status: 'error',
+      error: 'Unexpected data format from KiwiSDR API',
       message: 'Unexpected data format from KiwiSDR API',
     };
   }

@@ -40,7 +40,22 @@ async function fetchHead(url, { bytes = HEAD_BYTES, timeout = 20000 } = {}) {
     }
     await reader.cancel().catch(() => {});
 
-    return { rawText: Buffer.concat(chunks).toString('utf8') };
+    const rawText = Buffer.concat(chunks).toString('utf8');
+    // These exports are XML; a body starting with '{' or '[' instead is an
+    // HTTP-200 JSON error (rate limit, maintenance, etc.) that
+    // parseSDNMetadata would otherwise read as XML with no matches — a quiet
+    // "no data" rather than a reported failure.
+    const trimmed = rawText.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      let msg = 'Unexpected JSON response instead of XML';
+      try {
+        const parsed = JSON.parse(trimmed);
+        msg = parsed?.error || parsed?.message || msg;
+      } catch { /* keep default msg */ }
+      return { error: msg };
+    }
+
+    return { rawText };
   } catch (e) {
     return { error: e.message };
   } finally {
@@ -87,7 +102,11 @@ function parseSDNMetadata(xml) {
     publishDate,
     entryCount,
     recordCount: recordCount ? parseInt(recordCount, 10) : null,
-    hasData: raw.length > 0,
+    // A nonzero-length body is not evidence of real SDN data — an HTTP-200
+    // error body (JSON slipping past the sniff above, an HTML error page,
+    // etc.) has nonzero length too. Require that we actually parsed at
+    // least one real field out of it.
+    hasData: !!(publishDate || entryCount !== null || recordCount),
     dataSize: raw.length,
   };
 }
@@ -161,21 +180,31 @@ export async function briefing() {
   const advancedMeta = parseSDNMetadata(advancedHead);
   const sampleEntries = parseRecentEntries(sdnHead);
 
+  // sdnMeta/advancedMeta collapse to just { error } when the ranged read
+  // failed or the body wasn't XML — collect those to report at the top
+  // level, but keep both list objects below either way (retention: a failed
+  // list never displaces the one that succeeded).
+  const listErrors = [];
+  if (sdnMeta.error) listErrors.push(`SDN (${sdnMeta.error})`);
+  if (advancedMeta.error) listErrors.push(`SDN_ADVANCED (${advancedMeta.error})`);
+
   return {
     source: 'OFAC Sanctions',
     timestamp: new Date().toISOString(),
     lastUpdated: sdnMeta.publishDate || advancedMeta.publishDate || 'unknown',
     sdnList: {
-      publishDate: sdnMeta.publishDate,
-      entryCount: sdnMeta.entryCount,
-      recordCount: sdnMeta.recordCount,
-      dataAvailable: sdnMeta.hasData,
+      publishDate: sdnMeta.publishDate ?? null,
+      entryCount: sdnMeta.entryCount ?? null,
+      recordCount: sdnMeta.recordCount ?? null,
+      dataAvailable: !!sdnMeta.hasData,
+      ...(sdnMeta.error ? { error: sdnMeta.error } : {}),
     },
     advancedList: {
-      publishDate: advancedMeta.publishDate,
-      entryCount: advancedMeta.entryCount,
-      recordCount: advancedMeta.recordCount,
-      dataAvailable: advancedMeta.hasData,
+      publishDate: advancedMeta.publishDate ?? null,
+      entryCount: advancedMeta.entryCount ?? null,
+      recordCount: advancedMeta.recordCount ?? null,
+      dataAvailable: !!advancedMeta.hasData,
+      ...(advancedMeta.error ? { error: advancedMeta.error } : {}),
     },
     sampleEntries: sampleEntries.slice(0, 10),
     endpoints: {
@@ -183,6 +212,9 @@ export async function briefing() {
       sdnAdvanced: SDN_ADVANCED_URL,
       consolidatedAdvanced: CONS_ADVANCED_URL,
     },
+    // Top-level error per the shared adapter contract, combining both lists'
+    // failures when present.
+    ...(listErrors.length > 0 ? { error: listErrors.join('; ') } : {}),
   };
 }
 

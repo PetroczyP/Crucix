@@ -87,16 +87,25 @@ export async function briefing() {
   }
 
   const subredditResults = {};
+  const failures = [];
   for (const sub of SUBREDDITS) {
     const result = await getHot(sub, { limit: 10, token });
-    const children = result?.data?.children || [];
-    subredditResults[sub] = children.map(compactPost).filter(Boolean);
+    // A failed OAuth token that still resolves via the public route is not a
+    // failure — only a subreddit fetch that itself errored (on whichever
+    // route was used) counts as one, and it doesn't erase peers that worked.
+    if (result?.error) {
+      failures.push(`${sub}: ${result.error}`);
+    } else {
+      const children = result?.data?.children || [];
+      subredditResults[sub] = children.map(compactPost).filter(Boolean);
+    }
     await delay(token ? 1000 : 2000);
   }
 
   return {
     source: 'Reddit',
     timestamp: new Date().toISOString(),
+    ...(failures.length > 0 ? { error: failures.join('; ') } : {}),
     subreddits: subredditResults,
   };
 }

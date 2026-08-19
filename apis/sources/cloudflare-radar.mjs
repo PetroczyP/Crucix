@@ -170,6 +170,14 @@ export async function briefing() {
     };
   }
 
+  // Partial failure: at least one of the three sub-fetches came back but not
+  // all three. Name which failed so it isn't silently zeroed alongside the
+  // groups that succeeded.
+  const partialErrors = [];
+  if (outages?.error) partialErrors.push(`outages: ${outages.error}`);
+  if (attacks?.error) partialErrors.push(`attacks: ${attacks.error}`);
+  if (anomalies?.error) partialErrors.push(`anomalies: ${anomalies.error}`);
+
   const outageList = Array.isArray(outages) ? outages : [];
   const anomalyList = Array.isArray(anomalies) ? anomalies : [];
 
@@ -201,6 +209,7 @@ export async function briefing() {
   return {
     source: 'Cloudflare-Radar',
     timestamp: new Date().toISOString(),
+    ...(partialErrors.length ? { error: partialErrors.join('; ') } : {}),
     outages: {
       total: outageList.length,
       active: activeOutages.length,

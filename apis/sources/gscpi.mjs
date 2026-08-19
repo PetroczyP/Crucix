@@ -19,6 +19,19 @@ export async function getGSCPI(months = 12) {
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
+    // The NY Fed can return HTTP 200 with a JSON error body (maintenance,
+    // rate limiting) instead of the CSV — parseCSV would silently read that
+    // single line as "no rows". A CSV row never starts with '{', so sniff
+    // for a JSON body before parsing.
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      let msg = 'Unexpected JSON response instead of CSV';
+      try {
+        const parsed = JSON.parse(trimmed);
+        msg = parsed?.error || parsed?.message || msg;
+      } catch { /* keep default msg */ }
+      throw new Error(msg);
+    }
     return { data: parseCSV(text, months) };
   } catch (e) {
     return { error: e.message || 'Failed to fetch GSCPI data', data: [] };

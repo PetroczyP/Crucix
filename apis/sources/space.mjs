@@ -102,9 +102,14 @@ async function getConstellationStats() {
     getTLEs('oneweb'),
   ]);
 
+  const errors = [];
+  if (starlink?.error) errors.push(`starlink: ${starlink.error}`);
+  if (oneweb?.error) errors.push(`oneweb: ${oneweb.error}`);
+
   return {
     starlink: Array.isArray(starlink) ? starlink.length : 0,
     oneweb: Array.isArray(oneweb) ? oneweb.length : 0,
+    ...(errors.length ? { error: errors.join('; ') } : {}),
   };
 }
 
@@ -160,10 +165,22 @@ export async function briefing() {
     const data = { launches, stations, military, constellations };
     const signals = generateSignals(data);
 
+    // hasData above is `!launches.error || !stations.error`, so reaching here means at
+    // least one of them succeeded — not both. Any of the four feeds may have failed
+    // independently, and each one silently substitutes a zero/empty value below, so all
+    // four are surfaced rather than reporting a confident militarySatellites: 0 or an
+    // empty launch list for a dead feed (issue 006).
+    const partialErrors = [];
+    if (launches?.error) partialErrors.push(`launches: ${launches.error}`);
+    if (stations?.error) partialErrors.push(`stations: ${stations.error}`);
+    if (military?.error) partialErrors.push(`military: ${military.error}`);
+    if (constellations?.error) partialErrors.push(`constellations: ${constellations.error}`);
+
     return {
       source: 'Space/CelesTrak',
       timestamp: new Date().toISOString(),
       status: 'active',
+      ...(partialErrors.length ? { error: partialErrors.join('; ') } : {}),
       recentLaunches: launches.recentLaunches || [],
       totalNewObjects: launches.totalObjects || 0,
       launchByCountry: launches.byCountry || {},
