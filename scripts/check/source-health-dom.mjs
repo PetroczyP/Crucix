@@ -126,9 +126,12 @@ const ASSERT = `(() => {
     return { cls: [...dot.classList].filter(c => c !== 'sd'),
              w: r.width, h: r.height, display: cs.display, visibility: cs.visibility }; };
   const de = document.documentElement;
+  const errNames = items.filter(el => el.querySelector('.sd')?.classList.contains('err'))
+    .map(el => (el.querySelector('span')?.textContent||'').trim()).sort();
   return JSON.stringify({ gridExists: !!grid, count: items.length,
-    failed: state(row(${JSON.stringify(FAILED[0])})), healthy: state(row(${JSON.stringify(HEALTHY_ROW)})),
-    names: items.map(el => (el.querySelector('span')?.textContent||'').trim()),
+    failed: ${JSON.stringify(FAILED)}.map(n => [n, state(row(n))]),
+    healthy: state(row(${JSON.stringify(HEALTHY_ROW)})),
+    errNames,
     overflow: de.scrollWidth - de.clientWidth });
 })()`;
 
@@ -149,12 +152,16 @@ try {
 
     must(r.gridExists, `${label}: #lowerGrid .src-grid missing`);
     must(r.count === SOURCES.length, `${label}: expected ${SOURCES.length} rows, got ${r.count}`);
-    // fixture identity — these exact rows in these exact states
-    must(r.failed?.cls.includes('err'), `${label}: ${FAILED[0]} should carry .sd.err, got ${r.failed?.cls}`);
+    // Fixture identity: the rendered error set must be EXACTLY the fixture's failed rows.
+    // Checking only that the names exist would pass if FRED and Space rendered green.
+    must(JSON.stringify(r.errNames) === JSON.stringify([...FAILED].sort()),
+      `${label}: rendered .sd.err set is ${JSON.stringify(r.errNames)}, expected ${JSON.stringify([...FAILED].sort())}`);
+    for (const [n, st] of r.failed || []) {
+      must(st?.cls.includes('err'), `${label}: ${n} should carry .sd.err, got ${st?.cls}`);
+    }
     must(r.healthy?.cls.includes('ok'), `${label}: ${HEALTHY_ROW} should carry .sd.ok, got ${r.healthy?.cls}`);
-    must(FAILED.every(f => r.names?.includes(f)), `${label}: fixture rows missing — got ${r.names?.length} names`);
-    // visibility, not just presence
-    for (const [which, s] of [['failed', r.failed], ['healthy', r.healthy]]) {
+    // visibility, not just presence — every failed row plus a healthy control
+    for (const [which, s] of [...(r.failed || []).map(([n, st]) => [n, st]), ['healthy', r.healthy]]) {
       must(s && s.w > 0 && s.h > 0, `${label}: ${which} dot has zero bounding box (${s?.w}x${s?.h})`);
       must(s && s.display !== 'none', `${label}: ${which} dot display:${s?.display}`);
       must(s && s.visibility !== 'hidden', `${label}: ${which} dot visibility:${s?.visibility}`);

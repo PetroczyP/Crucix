@@ -165,12 +165,17 @@ export async function briefing() {
         if (!Array.isArray(prevRecords)) prevRecords = [];
         records = prevRecords;
 
-        // Only a real failure when BOTH the current-year and previous-year
-        // attempts errored — a legitimate "no data this year" is not a failure.
-        if (currentYearError && prevData?.error) {
+        // The chain resolves HERE, so failure is judged on the fallback's outcome, not on
+        // both attempts erroring. A current year that legitimately has no publication yet
+        // is not a failure — but once we have asked the previous-year endpoint for the
+        // data and IT failed, the source did not deliver what it went looking for.
+        // Judge H-10: requiring both to error let a succeeded-but-empty current year plus
+        // a dead fallback report as a quiet healthy source.
+        if (prevData?.error) {
           failures.push(
             `${COUNTRIES[reporter] || reporter}/${STRATEGIC_COMMODITIES[cmdCode] || cmdCode}: ` +
-            `${currentYearError}; fallback ${prevYear}: ${prevData.error}`
+            (currentYearError ? `${currentYearError}; ` : '') +
+            `fallback ${prevYear}: ${prevData.error}`
           );
         }
       }

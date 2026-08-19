@@ -151,25 +151,15 @@ export async function briefing() {
       getConstellationStats(),
     ]);
 
-    const hasData = !launches.error || !stations.error;
-
-    if (!hasData) {
-      return {
-        source: 'Space/CelesTrak',
-        timestamp: new Date().toISOString(),
-        status: 'error',
-        error: launches.error || stations.error || 'Failed to fetch space data',
-      };
-    }
-
     const data = { launches, stations, military, constellations };
     const signals = generateSignals(data);
 
-    // hasData above is `!launches.error || !stations.error`, so reaching here means at
-    // least one of them succeeded — not both. Any of the four feeds may have failed
-    // independently, and each one silently substitutes a zero/empty value below, so all
-    // four are surfaced rather than reporting a confident militarySatellites: 0 or an
-    // empty launch list for a dead feed (issue 006).
+    // Every feed is reported independently, and the payload is built whatever failed.
+    // There is no early return for "launches and stations both failed": that discarded a
+    // successful military or constellation peer entirely (Judge H-11), breaking the
+    // contract's retention clause. Each feed silently substitutes a zero/empty value
+    // below, so a failure must be named rather than rendered as a confident
+    // militarySatellites: 0 or an empty launch list (issue 006).
     const partialErrors = [];
     if (launches?.error) partialErrors.push(`launches: ${launches.error}`);
     if (stations?.error) partialErrors.push(`stations: ${stations.error}`);
@@ -179,7 +169,7 @@ export async function briefing() {
     return {
       source: 'Space/CelesTrak',
       timestamp: new Date().toISOString(),
-      status: 'active',
+      status: (launches.error && stations.error) ? 'error' : 'active',
       ...(partialErrors.length ? { error: partialErrors.join('; ') } : {}),
       recentLaunches: launches.recentLaunches || [],
       totalNewObjects: launches.totalObjects || 0,
