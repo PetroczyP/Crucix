@@ -366,3 +366,73 @@ describe('homogeneous fan-outs — one member fails, its peers keep their record
     });
   }
 });
+
+describe('content retention — the four adapters whose survivors were unasserted', () => {
+  // Judge H-12 r4: each of these kept the correct top-level `error` and return shape while
+  // silently hollowing a successful peer, and every existing oracle stayed green because it
+  // asserted a container or a numeric type rather than a value.
+
+  test('firms: one region fails, the surviving regions keep their detections', async () => {
+    const csv = () => text('latitude,longitude,brightness,acq_date,confidence,frp\n50.1,8.2,340.5,2026-08-19,80,25.3\n');
+    let n = 0;
+    globalThis.fetch = async () => { n += 1; return n === 1 ? fail418() : csv(); };
+    const p = await brief('firms');
+    assert.ok(hasError(p), 'a failed hotspot region must report');
+    const detected = (p.hotspots || []).reduce((a, h) => a + (h.totalDetections || 0), 0);
+    assert.ok(detected > 0, `surviving regions lost their detections (total ${detected})`);
+  });
+
+  // Both directions: failing only the broad pull cannot detect the broad pull being
+  // hollowed, because the fixture already removed it. Each side must be the survivor once.
+  for (const [label, failAt] of [['broad pull', 1], ['an analyte query', 2]]) {
+    test(`epa: ${label} fails, the other path's readings survive`, async () => {
+      const reading = () => json([{ value: 31, unit: 'cpm', captured_at: '2026-08-19T00:00:00Z' }]);
+      let n = 0;
+      globalThis.fetch = async () => { n += 1; return n === failAt ? fail418() : reading(); };
+      const p = await brief('epa');
+      assert.ok(hasError(p), 'a failed EPA path must report');
+      assert.ok(p.totalReadings > 0, `surviving readings were discarded (totalReadings ${p.totalReadings})`);
+    });
+  }
+
+  test('usaspending: agencies fails, the defense AWARD survives — not just an array', async () => {
+    globalThis.fetch = async (u) => String(u).includes('toptier_agencies')
+      ? fail418()
+      : json({ results: [{ 'Award ID': 'A1', 'Award Amount': 9999, 'Recipient Name': 'SENTINEL CORP', 'Awarding Agency': 'DoD', 'Start Date': '2026-08-01' }] });
+    const p = await brief('usaspending');
+    assert.ok(hasError(p));
+    assert.equal(p.recentDefenseContracts?.[0]?.recipient, 'SENTINEL CORP',
+      'the surviving defense award was hollowed out');
+  });
+
+  test('telegram: one channel fails, the surviving channels keep their posts', async () => {
+    const html = () => text('<html><div class="tgme_widget_message" data-post="chan/1">' +
+      '<div class="tgme_widget_message_text">SENTINEL POST</div>' +
+      '<time datetime="2026-08-19T00:00:00+00:00"></time></div></html>');
+    // Fail the first CHANNEL scrape, not the first request — with a token configured the
+    // first request is the Bot API call, whose failure is a working fallback, not a failure.
+    let scraped = 0;
+    globalThis.fetch = async (u) => {
+      if (!String(u).includes('t.me')) return fail418();
+      scraped += 1;
+      return scraped === 1 ? fail418() : html();
+    };
+    const p = await brief('telegram');
+    assert.ok(hasError(p), 'a failed channel must report');
+    assert.ok(p.totalPosts > 0, `surviving channels lost their posts (totalPosts ${p.totalPosts})`);
+    assert.ok(JSON.stringify(p.topPosts || []).includes('SENTINEL'),
+      'the surviving channels\' post CONTENT was discarded');
+    assert.ok(p.channelsReachable > 0 && p.channelsReachable < p.channelsMonitored,
+      `expected a partial outage, got ${p.channelsReachable}/${p.channelsMonitored} reachable`);
+  });
+
+  test('telegram: Bot API fails, the scrape fallback delivers — no error', async () => {
+    // The fallback pair AC-1 requires for telegram, which was missing.
+    const html = () => text('<html><div class="tgme_widget_message" data-post="chan/1">' +
+      '<div class="tgme_widget_message_text">SENTINEL POST</div>' +
+      '<time datetime="2026-08-19T00:00:00+00:00"></time></div></html>');
+    globalThis.fetch = async (u) => String(u).includes('api.telegram.org') ? fail418() : html();
+    const p = await brief('telegram');
+    assert.equal(hasError(p), false, 'a working scrape fallback is not a failure');
+  });
+});
