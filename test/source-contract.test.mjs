@@ -26,7 +26,7 @@ const hasError = (p) => typeof p?.error === 'string' && p.error !== '';
 // Format-correct success bodies, per adapter parser.
 const SAT = { OBJECT_NAME: 'SAT', NORAD_CAT_ID: 1, OBJECT_ID: '2026-001A', EPOCH: '2026-08-19T00:00:00', COUNTRY_CODE: 'US' };
 const HEALTHY = {
-  gscpi: () => text('date,v1\n2026-07,0.15\n2026-08,0.20\n'),
+  gscpi: () => text('date,v1\n31-Jul-2026,0.15\n31-Aug-2026,0.20\n'),  // parser wants DD-Mon-YYYY
   firms: () => text('latitude,longitude,brightness,acq_date,confidence,frp\n50.1,8.2,320.5,2026-08-19,80,12.3\n'),
   ofac: () => text('<?xml version="1.0"?><sdnList><publshInformation><Publish_Date>08/19/2026</Publish_Date>' +
                    '<Record_Count>1234</Record_Count></publshInformation></sdnList>'),
@@ -303,4 +303,66 @@ describe('the sweep keeps an errored source payload', () => {
       'an errored source must keep its payload in `sources`');
     assert.ok(out.crucix.sourcesFailed > 20, 'the sweep should report the failures honestly');
   });
+});
+
+// --- content retention -------------------------------------------------------------
+// The envelope proxy above is a coarse guard. It cannot see a survivor being replaced by
+// null, which is the loss AC-1 and design M-9 actually forbid — so these assert a value
+// derived from a sentinel body, per required path.
+
+describe('content retention — surviving peers keep their VALUES', () => {
+  test('eia: WTI fails, brent/gas/inventory values survive', async () => {
+    // Judge H-12: an oracle that checks only `!!p.oilPrices` stays green while every
+    // sibling value is replaced by null.
+    const series = (v) => json({ response: { data: [{ period: '2026-08-01', value: v }] } });
+    globalThis.fetch = async (u) => String(u).includes('RWTC') ? fail418() : series(77.7);
+    const p = await brief('eia');
+    assert.ok(hasError(p), 'a failed WTI path must report');
+    assert.equal(p.oilPrices?.brent?.value, 77.7, 'brent value lost');
+    assert.equal(p.gasPrice?.value, 77.7, 'gas value lost');
+    assert.equal(p.inventories?.crudeStocks?.value, 77.7, 'crude stocks value lost');
+  });
+
+  test('gscpi: a healthy body yields a parsed latest value', async () => {
+    // The previous fixture used a date format the parser rejects, so `latest` was null and
+    // `p.latest !== undefined` passed anyway — AC-8 proved nothing for this adapter.
+    globalThis.fetch = async () => HEALTHY.gscpi();
+    const p = await brief('gscpi');
+    assert.equal(hasError(p), false);
+    assert.ok(p.latest && p.latest.value === 0.2, `expected the parsed latest value, got ${JSON.stringify(p.latest)}`);
+  });
+
+  test('comtrade: primary FAILS and the fallback succeeds — no error', async () => {
+    // The other half of AC-1's pair: r3 only covered a primary that succeeded EMPTY.
+    const prevYear = new Date().getFullYear() - 1;
+    globalThis.fetch = async (u) => String(u).includes(`period=${prevYear}`)
+      ? json({ data: [{ reporterCode: 842, cmdCode: '2709', primaryValue: 4242, period: prevYear, partnerDesc: 'X', flowDesc: 'Import' }] })
+      : fail418();
+    const p = await brief('comtrade');
+    assert.equal(hasError(p), false, 'a failed primary with a working fallback is not a failure');
+    assert.ok(p.tradeFlows.length > 0, 'the fallback data must survive');
+  });
+});
+
+describe('homogeneous fan-outs — one member fails, its peers keep their records', () => {
+  const post = { data: { title: 'SENTINEL', score: 1, num_comments: 0, permalink: '/r/x/1', created_utc: 1, subreddit: 'worldnews', author: 'u' } };
+  const cases = {
+    bluesky: { fail: 'q=', body: () => json({ posts: [{ uri: 'at://1', cid: 'c', author: { handle: 'h' }, record: { text: 'SENTINEL', createdAt: '2026-08-19T00:00:00Z' }, likeCount: 1, repostCount: 0 }] }),
+               survives: (p) => JSON.stringify(p.topics).includes('SENTINEL') },
+    safecast: { fail: 'distance', body: () => json([{ value: 30, unit: 'cpm', captured_at: '2026-08-19T00:00:00Z' }]),
+                survives: (p) => p.sites.some(s => s.recentReadings > 0) },
+    patents: { fail: 'q=', body: () => json({ patents: [{ patent_id: '1', patent_title: 'SENTINEL', patent_date: '2026-08-01' }] }),
+               survives: (p) => JSON.stringify(p.recentPatents).includes('SENTINEL') },
+    yfinance: { fail: '%5EGSPC', body: () => HEALTHY.yfinance(),
+                survives: (p) => Object.keys(p.quotes).length > 1 },
+  };
+  for (const [name, c] of Object.entries(cases)) {
+    test(`${name}: one member fails, peers retain records`, async () => {
+      let n = 0;
+      globalThis.fetch = async () => { n += 1; return n === 1 ? fail418() : c.body(); };
+      const p = await brief(name);
+      assert.ok(hasError(p), `${name} hid a single failed member`);
+      assert.ok(c.survives(p), `${name} lost its surviving members' records`);
+    });
+  }
 });
