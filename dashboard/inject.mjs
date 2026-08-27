@@ -263,7 +263,7 @@ export function generateIdeas(V2) {
   const hy = V2.fred.find(f => f.id === 'BAMLH0A0HYM2');
   const spread = V2.fred.find(f => f.id === 'T10Y2Y');
 
-  if (V2.tg.urgent.length > 3 && V2.energy.wti > 68) {
+  if (V2.tg.urgent.length > 3 && V2.energy.wti > 95) {
     ideas.push({
       title: 'Conflict-Energy Nexus Active',
       text: `${V2.tg.urgent.length} urgent conflict signals with WTI at $${V2.energy.wti}. Geopolitical risk premium may expand. Consider energy exposure.`,
@@ -296,21 +296,6 @@ export function generateIdeas(V2) {
       });
     }
   }
-  if (spread) {
-    ideas.push({
-      title: spread.value > 0 ? 'Yield Curve Normalizing' : 'Yield Curve Inverted',
-      text: `10Y-2Y spread at ${spread.value.toFixed(2)}. ${spread.value > 0 ? 'Recession signal fading — cyclical rotation possible.' : 'Inversion persists — defensive positioning warranted.'}`,
-      type: 'watch', confidence: 'Medium', horizon: 'strategic'
-    });
-  }
-  const debt = parseFloat(V2.treasury.totalDebt);
-  if (debt > 35e12) {
-    ideas.push({
-      title: 'Fiscal Trajectory Supports Hard Assets',
-      text: `National debt at $${(debt / 1e12).toFixed(1)}T. Long-term gold, bitcoin, and real asset appreciation thesis intact.`,
-      type: 'long', confidence: 'High', horizon: 'strategic'
-    });
-  }
   const totalThermal = V2.thermal.reduce((s, t) => s + t.det, 0);
   if (totalThermal > 30000 && V2.tg.urgent.length > 2) {
     ideas.push({
@@ -320,7 +305,7 @@ export function generateIdeas(V2) {
     });
   }
 
-  // Yield Curve + Labor Interaction
+  // Curve Steepening + Labor Interaction
   const unemployment = V2.bls.find(b => b.id === 'LNS14000000' || b.id === 'UNRATE');
   const payrolls = V2.bls.find(b => b.id === 'CES0000000001' || b.id === 'PAYEMS');
   if (spread && unemployment && payrolls) {
@@ -394,7 +379,7 @@ export function generateIdeas(V2) {
     }
   }
 
-  return ideas.slice(0, 8);
+  return ideas;
 }
 
 // === Synthesize raw sweep data into dashboard format ===
@@ -709,18 +694,18 @@ async function cliInject() {
         V2.ideasSource = 'llm';
         console.log(`[LLM] Generated ${llmIdeas.length} ideas`);
       } else {
-        V2.ideas = [];
-        V2.ideasSource = 'llm-failed';
+        V2.ideas = generateIdeas(V2);
+        V2.ideasSource = 'rules';
         console.log('[LLM] No ideas returned');
       }
     } catch (err) {
-      V2.ideas = [];
-      V2.ideasSource = 'llm-failed';
+      V2.ideas = generateIdeas(V2);
+      V2.ideasSource = 'rules';
       console.log('[LLM] Idea generation failed:', err.message);
     }
   } else {
-    V2.ideas = [];
-    V2.ideasSource = 'disabled';
+    V2.ideas = generateIdeas(V2);
+    V2.ideasSource = 'rules';
   }
   console.log(`Generated ${V2.ideas.length} leverageable ideas`);
 

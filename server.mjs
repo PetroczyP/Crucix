@@ -334,35 +334,41 @@ async function runSweepCycle() {
     console.log('[Crucix] Synthesizing dashboard data...');
     const synthesized = await synthesize(rawData);
 
-    // 4. Delta computation + memory
-    const delta = memory.addRun(synthesized);
+    // 4. Delta computation — reads the true previous run before any mutation,
+    //    so it's safe to call before this sweep's ideas are assigned (backlog 013/AC-9)
+    const { delta, previousIdeas } = memory.prepareDelta(synthesized);
     synthesized.delta = delta;
 
-    // 5. LLM-powered trade ideas (LLM-only feature) — isolated so failures don't kill sweep
+    // 5. Trade ideas — LLM-powered when configured and successful, otherwise
+    //    the rule-based fallback (backlog 013) so the dashboard never shows nothing
     if (llmProvider?.isConfigured) {
       try {
         console.log('[Crucix] Generating LLM trade ideas...');
-        const previousIdeas = memory.getLastRun()?.ideas || [];
         const llmIdeas = await generateLLMIdeas(llmProvider, synthesized, delta, previousIdeas);
         if (llmIdeas) {
           synthesized.ideas = llmIdeas;
           synthesized.ideasSource = 'llm';
           console.log(`[Crucix] LLM generated ${llmIdeas.length} ideas`);
         } else {
-          synthesized.ideas = [];
-          synthesized.ideasSource = 'llm-failed';
+          synthesized.ideas = generateIdeas(synthesized);
+          synthesized.ideasSource = 'rules';
         }
       } catch (llmErr) {
         console.error('[Crucix] LLM ideas failed (non-fatal):', llmErr.message);
-        synthesized.ideas = [];
-        synthesized.ideasSource = 'llm-failed';
+        synthesized.ideas = generateIdeas(synthesized);
+        synthesized.ideasSource = 'rules';
       }
     } else {
-      synthesized.ideas = [];
-      synthesized.ideasSource = 'disabled';
+      synthesized.ideas = generateIdeas(synthesized);
+      synthesized.ideasSource = 'rules';
     }
 
-    // 6. Alert evaluation — Telegram + Discord (LLM with rule-based fallback, multi-tier, semantic dedup)
+    // 6. Persist the run now that ideas are finalized, using the delta computed in step 4
+    //    (backlog 013/AC-9 — persisting after ideas are assigned means next sweep's
+    //    previousIdeas, read via prepareDelta above, reflects this run's actual ideas)
+    memory.persist(synthesized, delta);
+
+    // 7. Alert evaluation — Telegram + Discord (LLM with rule-based fallback, multi-tier, semantic dedup)
     if (delta?.summary?.totalChanges > 0) {
       if (telegramAlerter.isConfigured) {
         telegramAlerter.evaluateAndAlert(llmProvider, delta, memory).catch(err => {
@@ -376,7 +382,7 @@ async function runSweepCycle() {
       }
     }
 
-    // 7. Post actionable ideas to Discord (HIGH confidence, short horizon, Kalshi-style)
+    // 8. Post actionable ideas to Discord (HIGH confidence, short horizon, Kalshi-style)
     if (discordAlerter.isConfigured && synthesized.ideas?.length > 0) {
       discordAlerter.sendActionableIdeas(synthesized.ideas).catch(err => {
         console.error('[Crucix] Discord idea alert error:', err.message);
@@ -388,7 +394,7 @@ async function runSweepCycle() {
 
     currentData = synthesized;
 
-    // 6. Push to all connected browsers
+    // 9. Push to all connected browsers
     broadcast({ type: 'update', data: currentData });
 
     console.log(`[Crucix] Sweep complete — ${currentData.meta.sourcesOk}/${currentData.meta.sourcesQueried} sources OK`);

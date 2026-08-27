@@ -119,8 +119,11 @@
     "aiEnhanced": "IA AMÉLIORÉE",
     "llmOff": "LLM OFF",
     "pending": "EN ATTENTE",
+    "ruleBased": "RÈGLES",
     "llmNotConfigured": "LLM NON CONFIGURÉ",
     "llmHelp": "Définir LLM_PROVIDER + identifiants dans .env pour activer les idées de trade IA",
+    "noSignal": "AUCUN SIGNAL",
+    "noSignalHelp": "L'analyse par règles n'a trouvé aucun signal qualifiant lors de ce balayage.",
     "disclosure": "À TITRE INFORMATIF UNIQUEMENT. Ceci ne constitue pas un conseil financier, une recommandation d'achat ou de vente de titre, ni une sollicitation quelconque. Toutes les observations basées sur les signaux sont dérivées de données OSINT publiques et ne doivent pas être utilisées pour prendre des décisions d'investissement. Consultez un conseiller financier agréé avant tout investissement. Les performances passées ne garantissent pas les résultats futurs."
   },
   "regions": {

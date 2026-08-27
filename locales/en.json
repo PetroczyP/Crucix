@@ -119,8 +119,11 @@
     "aiEnhanced": "AI ENHANCED",
     "llmOff": "LLM OFF",
     "pending": "PENDING",
+    "ruleBased": "RULE-BASED",
     "llmNotConfigured": "LLM NOT CONFIGURED",
     "llmHelp": "Set LLM_PROVIDER + credentials in .env to enable AI-powered trade ideas",
+    "noSignal": "NO RULE SIGNALS",
+    "noSignalHelp": "Rule screening ran and found no qualifying signal this sweep.",
     "disclosure": "FOR INFORMATIONAL PURPOSES ONLY. This is not financial advice, a recommendation to buy or sell any security, or a solicitation of any kind. All signal-based observations are derived from publicly available OSINT data and should not be relied upon for investment decisions. Consult a licensed financial advisor before making any investment. Past performance does not guarantee future results."
   },
   "regions": {

@@ -15,7 +15,8 @@
     "clean": "node scripts/clean.mjs",
     "fresh-start": "npm run clean && npm start",
     "perf:globe": "node scripts/perf/globe-frame-time.mjs",
-    "check:source-health": "node scripts/check/source-health-dom.mjs"
+    "check:source-health": "node scripts/check/source-health-dom.mjs",
+    "check:ideas-panel": "node scripts/check/ideas-panel-dom.mjs"
   },
   "keywords": [
     "osint",

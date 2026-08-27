@@ -269,6 +269,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--s
 /* IDEAS SOURCE BADGE */
 .ideas-src{font-family:var(--mono);font-size:8px;letter-spacing:0.08em;padding:2px 6px;border:1px solid;display:inline-block;margin-left:6px}
 .ideas-src.llm{color:#ce93d8;border-color:rgba(206,147,216,0.4);background:rgba(206,147,216,0.08)}
+.ideas-src.rules{color:var(--warn);border-color:rgba(255,184,76,0.4);background:rgba(255,184,76,0.08)}
 .ideas-src.static{color:var(--dim);border-color:rgba(255,255,255,0.1);background:rgba(255,255,255,0.03)}
 
 /* LOW PERFORMANCE MODE */
@@ -1754,8 +1755,8 @@ function renderLower(){
       ${idea.risk ? `<div class="idea-text" style="color:var(--warn);margin-top:3px">Risk: ${idea.risk}</div>` : ''}
     </div>`).join('') : `<div style="padding:20px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:11px">
       <div style="font-size:24px;margin-bottom:8px;opacity:0.3">&#9888;</div>
-      <div>LLM NOT CONFIGURED</div>
-      <div style="font-size:9px;margin-top:6px;opacity:0.6">Set LLM_PROVIDER + credentials in .env to enable AI-powered trade ideas</div>
+      <div>${D.ideasSource==='rules'?t('ideas.noSignal','NO RULE SIGNALS'):'LLM NOT CONFIGURED'}</div>
+      <div style="font-size:9px;margin-top:6px;opacity:0.6">${D.ideasSource==='rules'?t('ideas.noSignalHelp','Rule screening ran and found no qualifying signal this sweep.'):'Set LLM_PROVIDER + credentials in .env to enable AI-powered trade ideas'}</div>
     </div>`;
 
 
@@ -1789,7 +1790,7 @@ function renderLower(){
       </div>
     </div>`;
   const ideasPanel = `<div class="g-panel lp-ideas">
-      <div class="sec-head"><h3>${t('panels.tradeIdeas','Leverageable Ideas')}</h3>${D.ideasSource==='llm'?'<span class="ideas-src llm">'+t('ideas.aiEnhanced','AI ENHANCED')+'</span>':D.ideasSource==='disabled'?'<span class="ideas-src static">'+t('ideas.llmOff','LLM OFF')+'</span>':'<span class="ideas-src static">'+t('ideas.pending','PENDING')+'</span>'}</div>
+      <div class="sec-head"><h3>${t('panels.tradeIdeas','Leverageable Ideas')}</h3>${D.ideasSource==='llm'?'<span class="ideas-src llm">'+t('ideas.aiEnhanced','AI ENHANCED')+'</span>':D.ideasSource==='rules'?'<span class="ideas-src rules">'+t('ideas.ruleBased','RULE-BASED')+'</span>':D.ideasSource==='disabled'?'<span class="ideas-src static">'+t('ideas.llmOff','LLM OFF')+'</span>':'<span class="ideas-src static">'+t('ideas.pending','PENDING')+'</span>'}</div>
       ${ideasHtml}
       <div class="disclosure">FOR INFORMATIONAL PURPOSES ONLY. This is not financial advice, a recommendation to buy or sell any security, or a solicitation of any kind. All signal-based observations are derived from publicly available OSINT data and should not be relied upon for investment decisions. Consult a licensed financial advisor before making any investment. Past performance does not guarantee future results.</div>
     </div>`;
