@@ -43,6 +43,69 @@ const llmProvider = createLLMProvider(config.llm);
 const telegramAlerter = new TelegramAlerter(config.telegram);
 const discordAlerter = new DiscordAlerter(config.discord || {});
 
+// The `/brief` digest — shared by the Telegram and Discord command handlers below.
+// Extracted so a test can call it directly with rule ideas and assert the glyphs and
+// titles render, without a live bot connection (backlog 013 build round 2, judge
+// finding H-4). Pure function: takes currentData/delta as arguments rather than
+// reading module state, and both callers' exact prior output is preserved — the two
+// dialects differ only in bold marker (Telegram's single `*` vs Discord's double `**`,
+// including where the marker wraps the leading emoji), passed via `markdown`.
+export function buildBriefSections(currentData, delta, { markdown } = {}) {
+  if (!currentData) return '⏳ No data yet — waiting for first sweep to complete.';
+
+  const isDiscord = markdown === 'discord';
+  const tg = currentData.tg || {};
+  const energy = currentData.energy || {};
+  const metals = currentData.metals || {};
+  const ideas = (currentData.ideas || []).slice(0, 3);
+
+  const sections = [
+    isDiscord ? `**📋 CRUCIX BRIEF**` : `📋 *CRUCIX BRIEF*`,
+    `_${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC_`,
+    ``,
+  ];
+
+  // Delta direction
+  if (delta?.summary) {
+    const dirEmoji = { 'risk-off': '📉', 'risk-on': '📈', 'mixed': '↔️' }[delta.summary.direction] || '↔️';
+    const dir = delta.summary.direction.toUpperCase();
+    sections.push(isDiscord
+      ? `${dirEmoji} Direction: **${dir}** | ${delta.summary.totalChanges} changes, ${delta.summary.criticalChanges} critical`
+      : `${dirEmoji} Direction: *${dir}* | ${delta.summary.totalChanges} changes, ${delta.summary.criticalChanges} critical`);
+    sections.push('');
+  }
+
+  // Key metrics
+  const vix = currentData.fred?.find(f => f.id === 'VIXCLS');
+  const hy = currentData.fred?.find(f => f.id === 'BAMLH0A0HYM2');
+  if (vix || energy.wti || metals.gold || metals.silver) {
+    sections.push(`📊 VIX: ${vix?.value || '--'} | WTI: $${energy.wti || '--'} | Brent: $${energy.brent || '--'}`);
+    sections.push(`   Gold: $${metals.gold || '--'} | Silver: $${metals.silver || '--'}${hy ? ` | HY Spread: ${hy.value}` : ''}`);
+    sections.push(`   NatGas: $${energy.natgas || '--'}`);
+    sections.push('');
+  }
+
+  // OSINT
+  if (tg.urgent?.length > 0) {
+    sections.push(`📡 OSINT: ${tg.urgent.length} urgent signals, ${tg.posts || 0} total posts`);
+    // Top 2 urgent
+    for (const p of tg.urgent.slice(0, 2)) {
+      sections.push(`  • ${(p.text || '').substring(0, 80)}`);
+    }
+    sections.push('');
+  }
+
+  // Top ideas
+  if (ideas.length > 0) {
+    sections.push(isDiscord ? `**💡 Top Ideas:**` : `💡 *Top Ideas:*`);
+    for (const idea of ideas) {
+      sections.push(`  ${idea.type === 'long' ? '📈' : idea.type === 'hedge' ? '🛡️' : '👁️'} ${idea.title}`);
+    }
+  }
+
+  return sections.join('\n');
+}
+
 if (llmProvider) console.log(`[Crucix] LLM enabled: ${llmProvider.name} (${llmProvider.model})`);
 if (telegramAlerter.isConfigured) {
   console.log('[Crucix] Telegram alerts enabled');
@@ -83,56 +146,7 @@ if (telegramAlerter.isConfigured) {
   });
 
   telegramAlerter.onCommand('/brief', async () => {
-    if (!currentData) return '⏳ No data yet — waiting for first sweep to complete.';
-
-    const tg = currentData.tg || {};
-    const energy = currentData.energy || {};
-    const metals = currentData.metals || {};
-    const delta = memory.getLastDelta();
-    const ideas = (currentData.ideas || []).slice(0, 3);
-
-    const sections = [
-      `📋 *CRUCIX BRIEF*`,
-      `_${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC_`,
-      ``,
-    ];
-
-    // Delta direction
-    if (delta?.summary) {
-      const dirEmoji = { 'risk-off': '📉', 'risk-on': '📈', 'mixed': '↔️' }[delta.summary.direction] || '↔️';
-      sections.push(`${dirEmoji} Direction: *${delta.summary.direction.toUpperCase()}* | ${delta.summary.totalChanges} changes, ${delta.summary.criticalChanges} critical`);
-      sections.push('');
-    }
-
-    // Key metrics
-    const vix = currentData.fred?.find(f => f.id === 'VIXCLS');
-    const hy = currentData.fred?.find(f => f.id === 'BAMLH0A0HYM2');
-    if (vix || energy.wti || metals.gold || metals.silver) {
-      sections.push(`📊 VIX: ${vix?.value || '--'} | WTI: $${energy.wti || '--'} | Brent: $${energy.brent || '--'}`);
-      sections.push(`   Gold: $${metals.gold || '--'} | Silver: $${metals.silver || '--'}${hy ? ` | HY Spread: ${hy.value}` : ''}`);
-      sections.push(`   NatGas: $${energy.natgas || '--'}`);
-      sections.push('');
-    }
-
-    // OSINT
-    if (tg.urgent?.length > 0) {
-      sections.push(`📡 OSINT: ${tg.urgent.length} urgent signals, ${tg.posts || 0} total posts`);
-      // Top 2 urgent
-      for (const p of tg.urgent.slice(0, 2)) {
-        sections.push(`  • ${(p.text || '').substring(0, 80)}`);
-      }
-      sections.push('');
-    }
-
-    // Top ideas
-    if (ideas.length > 0) {
-      sections.push(`💡 *Top Ideas:*`);
-      for (const idea of ideas) {
-        sections.push(`  ${idea.type === 'long' ? '📈' : idea.type === 'hedge' ? '🛡️' : '👁️'} ${idea.title}`);
-      }
-    }
-
-    return sections.join('\n');
+    return buildBriefSections(currentData, memory.getLastDelta(), { markdown: 'telegram' });
   });
 
   telegramAlerter.onCommand('/portfolio', async () => {
@@ -180,46 +194,7 @@ if (discordAlerter.isConfigured) {
   });
 
   discordAlerter.onCommand('brief', async () => {
-    if (!currentData) return '⏳ No data yet — waiting for first sweep to complete.';
-
-    const tg = currentData.tg || {};
-    const energy = currentData.energy || {};
-    const metals = currentData.metals || {};
-    const delta = memory.getLastDelta();
-    const ideas = (currentData.ideas || []).slice(0, 3);
-
-    const sections = [`**📋 CRUCIX BRIEF**\n_${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC_\n`];
-
-    if (delta?.summary) {
-      const dirEmoji = { 'risk-off': '📉', 'risk-on': '📈', 'mixed': '↔️' }[delta.summary.direction] || '↔️';
-      sections.push(`${dirEmoji} Direction: **${delta.summary.direction.toUpperCase()}** | ${delta.summary.totalChanges} changes, ${delta.summary.criticalChanges} critical\n`);
-    }
-
-    const vix = currentData.fred?.find(f => f.id === 'VIXCLS');
-    const hy = currentData.fred?.find(f => f.id === 'BAMLH0A0HYM2');
-    if (vix || energy.wti || metals.gold || metals.silver) {
-      sections.push(`📊 VIX: ${vix?.value || '--'} | WTI: $${energy.wti || '--'} | Brent: $${energy.brent || '--'}`);
-      sections.push(`   Gold: $${metals.gold || '--'} | Silver: $${metals.silver || '--'}${hy ? ` | HY Spread: ${hy.value}` : ''}`);
-      sections.push(`   NatGas: $${energy.natgas || '--'}`);
-      sections.push('');
-    }
-
-    if (tg.urgent?.length > 0) {
-      sections.push(`📡 OSINT: ${tg.urgent.length} urgent signals, ${tg.posts || 0} total posts`);
-      for (const p of tg.urgent.slice(0, 2)) {
-        sections.push(`  • ${(p.text || '').substring(0, 80)}`);
-      }
-      sections.push('');
-    }
-
-    if (ideas.length > 0) {
-      sections.push(`**💡 Top Ideas:**`);
-      for (const idea of ideas) {
-        sections.push(`  ${idea.type === 'long' ? '📈' : idea.type === 'hedge' ? '🛡️' : '👁️'} ${idea.title}`);
-      }
-    }
-
-    return sections.join('\n');
+    return buildBriefSections(currentData, memory.getLastDelta(), { markdown: 'discord' });
   });
 
   discordAlerter.onCommand('portfolio', async () => {
@@ -309,6 +284,58 @@ function broadcast(data) {
 }
 
 // === Sweep Cycle ===
+
+// Trade ideas — LLM-powered when configured and successful, otherwise the rule-based
+// fallback (backlog 013) so the dashboard never shows nothing. Extracted out of
+// runSweepCycle so a test can drive every branch without running a full sweep
+// (backlog 013 build round 2, judge finding H-3). Behaviour is unchanged from the
+// inline block it replaces — same three failure branches, same 'llm'/'rules' labels,
+// same console logging.
+export async function resolveIdeas(synthesized, provider, delta, previousIdeas) {
+  if (provider?.isConfigured) {
+    try {
+      console.log('[Crucix] Generating LLM trade ideas...');
+      const llmIdeas = await generateLLMIdeas(provider, synthesized, delta, previousIdeas);
+      if (llmIdeas) {
+        synthesized.ideas = llmIdeas;
+        synthesized.ideasSource = 'llm';
+        console.log(`[Crucix] LLM generated ${llmIdeas.length} ideas`);
+      } else {
+        synthesized.ideas = generateIdeas(synthesized);
+        synthesized.ideasSource = 'rules';
+      }
+    } catch (llmErr) {
+      console.error('[Crucix] LLM ideas failed (non-fatal):', llmErr.message);
+      synthesized.ideas = generateIdeas(synthesized);
+      synthesized.ideasSource = 'rules';
+    }
+  } else {
+    synthesized.ideas = generateIdeas(synthesized);
+    synthesized.ideasSource = 'rules';
+  }
+  return { ideas: synthesized.ideas, ideasSource: synthesized.ideasSource };
+}
+
+// The delta → ideas → persist sequence (backlog 013/AC-9's ordering fix), extracted so a
+// test can drive the exact production sequence against a real MemoryManager on a temp
+// directory, instead of re-implementing it (backlog 013 build round 2, judge finding H-4).
+// runSweepCycle calls this directly — the tested path and the production path are the
+// same code. Order matters and is unchanged from the inline block it replaces: delta is
+// computed (and previousIdeas read) BEFORE ideas are resolved, and the run is persisted
+// only AFTER ideas are finalized, so next sweep's previousIdeas reflects this sweep's
+// actually-served ideas.
+export async function runIdeasCycle(synthesized, provider, memoryManager) {
+  const { delta, previousIdeas } = memoryManager.prepareDelta(synthesized);
+  synthesized.delta = delta;
+
+  const { ideas, ideasSource } = await resolveIdeas(synthesized, provider, delta, previousIdeas);
+  synthesized.ideas = ideas;
+  synthesized.ideasSource = ideasSource;
+
+  memoryManager.persist(synthesized, delta);
+  return { delta, ideas, ideasSource };
+}
+
 async function runSweepCycle() {
   if (sweepInProgress) {
     console.log('[Crucix] Sweep already in progress, skipping');
@@ -334,39 +361,11 @@ async function runSweepCycle() {
     console.log('[Crucix] Synthesizing dashboard data...');
     const synthesized = await synthesize(rawData);
 
-    // 4. Delta computation — reads the true previous run before any mutation,
-    //    so it's safe to call before this sweep's ideas are assigned (backlog 013/AC-9)
-    const { delta, previousIdeas } = memory.prepareDelta(synthesized);
-    synthesized.delta = delta;
-
-    // 5. Trade ideas — LLM-powered when configured and successful, otherwise
-    //    the rule-based fallback (backlog 013) so the dashboard never shows nothing
-    if (llmProvider?.isConfigured) {
-      try {
-        console.log('[Crucix] Generating LLM trade ideas...');
-        const llmIdeas = await generateLLMIdeas(llmProvider, synthesized, delta, previousIdeas);
-        if (llmIdeas) {
-          synthesized.ideas = llmIdeas;
-          synthesized.ideasSource = 'llm';
-          console.log(`[Crucix] LLM generated ${llmIdeas.length} ideas`);
-        } else {
-          synthesized.ideas = generateIdeas(synthesized);
-          synthesized.ideasSource = 'rules';
-        }
-      } catch (llmErr) {
-        console.error('[Crucix] LLM ideas failed (non-fatal):', llmErr.message);
-        synthesized.ideas = generateIdeas(synthesized);
-        synthesized.ideasSource = 'rules';
-      }
-    } else {
-      synthesized.ideas = generateIdeas(synthesized);
-      synthesized.ideasSource = 'rules';
-    }
-
-    // 6. Persist the run now that ideas are finalized, using the delta computed in step 4
-    //    (backlog 013/AC-9 — persisting after ideas are assigned means next sweep's
-    //    previousIdeas, read via prepareDelta above, reflects this run's actual ideas)
-    memory.persist(synthesized, delta);
+    // 4-6. Delta computation → trade ideas (LLM, falling back to rule-based per backlog
+    //    013) → persist, in that exact order (backlog 013/AC-9's ordering fix). Extracted
+    //    to runIdeasCycle so the same sequence is exercised by tests as by production
+    //    (backlog 013 build round 2, judge finding H-4).
+    const { delta } = await runIdeasCycle(synthesized, llmProvider, memory);
 
     // 7. Alert evaluation — Telegram + Discord (LLM with rule-based fallback, multi-tier, semantic dedup)
     if (delta?.summary?.totalChanges > 0) {
@@ -507,7 +506,14 @@ process.on('uncaughtException', (err) => {
   console.error('[Crucix] Uncaught exception:', err?.stack || err?.message || err);
 });
 
-start().catch(err => {
-  console.error('[Crucix] FATAL — Server failed to start:', err?.stack || err?.message || err);
-  process.exit(1);
-});
+// Only auto-start when this file is the process entry point (node server.mjs / npm start /
+// the Docker entrypoint) — not when it's imported by a test (backlog 013 build round 2,
+// judge finding H-1). Same pattern already proven at dashboard/inject.mjs:739-743.
+const isMain = process.argv[1]
+  && fileURLToPath(import.meta.url).replace(/\\/g, '/') === process.argv[1].replace(/\\/g, '/');
+if (isMain) {
+  start().catch(err => {
+    console.error('[Crucix] FATAL — Server failed to start:', err?.stack || err?.message || err);
+    process.exit(1);
+  });
+}

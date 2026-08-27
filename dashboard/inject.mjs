@@ -676,19 +676,16 @@ function getCliArg(flag) {
   return idx >= 0 ? process.argv[idx + 1] : null;
 }
 
-async function cliInject() {
-  const data = JSON.parse(readFileSync(join(ROOT, 'runs/latest.json'), 'utf8'));
-  const htmlOverride = getCliArg('--html');
-  const shouldOpen = !process.argv.includes('--no-open');
-
-  console.log('Fetching RSS news feeds...');
-  const V2 = await synthesize(data);
-  const llmProvider = createLLMProvider(config.llm);
-
-  if (llmProvider?.isConfigured) {
+// Trade ideas for the CLI path — mirrors server.mjs's resolveIdeas. Extracted out of
+// cliInject so a test can drive every branch without running the full CLI flow
+// (backlog 013 build round 2, judge finding H-3). Behaviour is unchanged from the
+// inline block it replaces — same three failure branches, same 'llm'/'rules' labels,
+// same console logging.
+export async function resolveCliIdeas(V2, provider) {
+  if (provider?.isConfigured) {
     try {
-      console.log(`[LLM] Generating ideas via ${llmProvider.name}...`);
-      const llmIdeas = await generateLLMIdeas(llmProvider, V2, null, []);
+      console.log(`[LLM] Generating ideas via ${provider.name}...`);
+      const llmIdeas = await generateLLMIdeas(provider, V2, null, []);
       if (llmIdeas?.length) {
         V2.ideas = llmIdeas;
         V2.ideasSource = 'llm';
@@ -707,6 +704,21 @@ async function cliInject() {
     V2.ideas = generateIdeas(V2);
     V2.ideasSource = 'rules';
   }
+  return { ideas: V2.ideas, ideasSource: V2.ideasSource };
+}
+
+async function cliInject() {
+  const data = JSON.parse(readFileSync(join(ROOT, 'runs/latest.json'), 'utf8'));
+  const htmlOverride = getCliArg('--html');
+  const shouldOpen = !process.argv.includes('--no-open');
+
+  console.log('Fetching RSS news feeds...');
+  const V2 = await synthesize(data);
+  const llmProvider = createLLMProvider(config.llm);
+
+  const { ideas: resolvedIdeas, ideasSource: resolvedIdeasSource } = await resolveCliIdeas(V2, llmProvider);
+  V2.ideas = resolvedIdeas;
+  V2.ideasSource = resolvedIdeasSource;
   console.log(`Generated ${V2.ideas.length} leverageable ideas`);
 
   const json = JSON.stringify(V2);

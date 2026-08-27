@@ -12,6 +12,14 @@
 // while failing the actual claim. This asserts the rendered TEXT against the locale FILE, read
 // at runtime, in both en and fr, for all four ideasSource states, plus visibility of the
 // empty-state element (a correct element inside a display:none wrapper would otherwise pass).
+// One exception to "always the locale file": jarvis.html's empty-state ternary
+// (dashboard/public/jarvis.html:1758-1759) runs the 'rules' arm through t(), but its other arm —
+// covering 'llm' and every unrecognized ideasSource — is a literal 'LLM NOT CONFIGURED' /
+// 'Set LLM_PROVIDER...' string, not wrapped in t(), so it does not vary by locale. Those two
+// cases are asserted against that literal, in both locale passes, not against LOCALES.fr — that
+// mismatch (fr.json has translated ideas.llmNotConfigured/llmHelp keys the page never reads) is
+// a real localization gap but is out of scope here; this check only pins that the LLM copy, not
+// the rules copy, is what renders (judge finding L-1, build round 2).
 //
 // Route: an in-process fixture server serves the real jarvis.html (with a server.mjs:249-style
 // locale injection ahead of the inline script, since server.mjs never runs here) plus a crafted
@@ -225,14 +233,43 @@ try {
       `${locale}/llm: badge text is "${r.badgeText}", expected locale value "${L.aiEnhanced}"`);
     must(r.cards > 0, `${locale}/llm: expected idea card(s) to render, got ${r.cards}`);
 
-    // Case 4 — unknown source (regression): catch-all still reachable, badge is
-    // 'ideas-src static' with locale ideas.pending.
+    // Case 4 — 'llm' + empty (L-1 fix): the empty state for a non-rules source must keep
+    // showing the LLM-not-configured copy, not the rules copy — the exact branch a build could
+    // silently break by routing every empty state through the 'rules' arm. See the file header
+    // for why the expected value is the literal string, not LOCALES[locale].
+    await ev(send, SET_AND_RENDER('llm', []));
+    r = JSON.parse(await ev(send, ASSERT) || '{}');
+    must(r.cards === 0, `${locale}/llm-empty: expected 0 idea cards, got ${r.cards}`);
+    must(!!r.emptyHeading, `${locale}/llm-empty: no empty-state heading element found`);
+    must(r.emptyHeading === 'LLM NOT CONFIGURED',
+      `${locale}/llm-empty: empty-state heading is "${r.emptyHeading}", expected "LLM NOT CONFIGURED"`);
+    must(r.emptyHeading !== L.noSignal,
+      `${locale}/llm-empty: empty-state leaked the rules copy ("${L.noSignal}") for an llm source`);
+    must(r.emptyHelp === 'Set LLM_PROVIDER + credentials in .env to enable AI-powered trade ideas',
+      `${locale}/llm-empty: empty-state sub-line is "${r.emptyHelp}", expected the LLM-not-configured help text`);
+    must(r.emptyHelp !== L.noSignalHelp,
+      `${locale}/llm-empty: empty-state sub-line leaked the rules help text ("${L.noSignalHelp}") for an llm source`);
+
+    // Case 5 — unknown source (regression): catch-all still reachable, badge is
+    // 'ideas-src static' with locale ideas.pending, and (L-1 fix) the empty state must show the
+    // same LLM fallback copy as Case 4 — an unrecognized ideasSource falls into the ternary's
+    // only other arm, which is the LLM one, not the rules one.
     await ev(send, SET_AND_RENDER('llm-failed', []));
     r = JSON.parse(await ev(send, ASSERT) || '{}');
     must(r.badgeClass === 'ideas-src static',
       `${locale}/unknown-source: badge class is "${r.badgeClass}", expected "ideas-src static"`);
     must(r.badgeText === L.pending,
       `${locale}/unknown-source: badge text is "${r.badgeText}", expected locale value "${L.pending}"`);
+    must(r.cards === 0, `${locale}/unknown-source: expected 0 idea cards, got ${r.cards}`);
+    must(!!r.emptyHeading, `${locale}/unknown-source: no empty-state heading element found`);
+    must(r.emptyHeading === 'LLM NOT CONFIGURED',
+      `${locale}/unknown-source: empty-state heading is "${r.emptyHeading}", expected "LLM NOT CONFIGURED"`);
+    must(r.emptyHeading !== L.noSignal,
+      `${locale}/unknown-source: empty-state leaked the rules copy ("${L.noSignal}") for an unrecognized source`);
+    must(r.emptyHelp === 'Set LLM_PROVIDER + credentials in .env to enable AI-powered trade ideas',
+      `${locale}/unknown-source: empty-state sub-line is "${r.emptyHelp}", expected the LLM-not-configured help text`);
+    must(r.emptyHelp !== L.noSignalHelp,
+      `${locale}/unknown-source: empty-state sub-line leaked the rules help text ("${L.noSignalHelp}") for an unrecognized source`);
   }
 
   must(pageErrors.length === 0, `console errors: ${pageErrors.join(' | ')}`);
@@ -244,6 +281,7 @@ try {
 }
 
 if (failures.length) { console.error('FAIL\n  ' + failures.join('\n  ')); process.exit(1); }
-console.log('PASS — ideas panel renders the correct badge class + locale text and empty-state ' +
-  'copy for rules/llm/unknown sources, in both en and fr; empty-state element is visible, not ' +
-  'just present; console clean.');
+console.log('PASS — ideas panel renders the correct badge class + locale badge text for ' +
+  'rules/llm/unknown sources, and the correct empty-state copy for rules/llm/unknown sources ' +
+  '(locale text for rules, the literal LLM-not-configured string for llm/unknown), in both en ' +
+  'and fr; empty-state element is visible, not just present; console clean.');
