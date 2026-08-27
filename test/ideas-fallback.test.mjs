@@ -17,16 +17,24 @@
 // AC-9 (previousIdeas ordering, both defects, via a real MemoryManager on a temp dir, plus
 // two full runIdeasCycle sweeps proving the production wiring itself — build round 2, judge
 // finding H-4).
+//
+// Build round 3 (judge findings H-5, H-7) adds: H-5b, an executed end-to-end run of cliInject
+// through the real jarvis.html replace-regex, for both a rule-firing and a zero-result
+// fixture (kills mutants 2 and 3); H-7, direct calls to the actual registered /brief
+// callbacks handleTelegramBrief/handleDiscordBrief, not just the buildBriefSections body they
+// wrap (kills mutants 4 and 5). H-5a drives runSweepCycle itself: build r3 made its `runsDir`
+// injectable, which was the last thing pinning the sweep to the repo, so the production
+// orchestration is now executed against a temp directory rather than documented as untestable.
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateIdeas, resolveCliIdeas } from '../dashboard/inject.mjs';
-import { resolveIdeas, buildBriefSections, runIdeasCycle } from '../server.mjs';
+import { generateIdeas, resolveCliIdeas, synthesize, cliInject } from '../dashboard/inject.mjs';
+import { resolveIdeas, buildBriefSections, runIdeasCycle, handleTelegramBrief, handleDiscordBrief, runSweepCycle } from '../server.mjs';
 import { MemoryManager } from '../lib/delta/index.mjs';
 
 const ROOT = new URL('../', import.meta.url);
@@ -357,7 +365,7 @@ const RULES = [
   },
 ];
 
-// ─── Gate isolation — Judge round 2, finding H-2 ─────────────────────────────────────────
+// ─── Gate isolation — Judge round 2, finding H-2; EXACT boundaries added round 3, H-6 ────
 //
 // The pairs above prove each rule CAN fire and CAN be silenced, but several of them flip
 // more than one gate at once, or never flip a gate that has no isolated test at all. The
@@ -367,6 +375,19 @@ const RULES = [
 // Every entry below holds each OTHER gate of the rule at a value that already satisfies
 // it, and flips ONLY the named gate across its threshold, so a mutation to that gate — and
 // only that gate — changes the fixture's outcome.
+//
+// CORRECTION (Judge round 3, finding H-6): the fixtures above isolated the right GATE but
+// bracketed it too widely (e.g. 21 vs 19 around a threshold of 20) — a threshold shift
+// anywhere inside that bracket (`> 20` to `> 19`) changes no observed outcome, because both
+// the old fire value and the old noFire value still land on the same side of the shifted
+// threshold. The Judge proved this with 18 independently-applied threshold mutants that all
+// survived the full suite, plus a 19th (the `V2.gscpi` existence guard) that crashes with no
+// fixture at all. Every entry below now sits EXACTLY on its threshold — `fire` uses the
+// smallest value that still satisfies the real condition (N + 0.01 for `>`, N - 0.01 for
+// `<`), `noFire` uses the threshold value itself (N) — so ANY shift of that threshold, in
+// either direction, changes which side of the boundary the fixture falls on. Eight gates
+// the Judge named had no isolated entry at all before this round (only an inexact pair in
+// the RULES table above, or nothing); those are added as new entries rather than edits.
 const GATE_ISOLATION = [
   {
     rule: 'Conflict-Energy Nexus Active',
@@ -375,86 +396,161 @@ const GATE_ISOLATION = [
     noFire: () => { const v = baseV2(); v.energy.wti = 96; v.tg.urgent = [1, 2, 3]; return v; },
   },
   {
+    rule: 'Elevated Volatility Regime',
+    gate: 'vix.value > 20 (single-condition rule, no peer gate), EXACT boundary — had no isolated entry before round 3 (H-6)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 20.01 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 20 }]; return v; },
+  },
+  {
     rule: 'Safe Haven Demand Rising',
-    gate: 'vix.value > 20 (peer hy.value > 3 held true)',
-    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 21 }]; return v; },
-    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 19 }]; return v; },
+    gate: 'vix.value > 20 (peer hy.value > 3 held true), EXACT boundary (round 3, H-6 — was 21/19, inside which > 20 -> > 19 survived)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 20.01 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 20 }]; return v; },
+  },
+  {
+    rule: 'Safe Haven Demand Rising',
+    gate: 'hy.value > 3 (peer vix.value > 20 held true), EXACT boundary — this rule\'s SECOND gate, had no isolated entry before round 3 (H-6 named only the vix leg)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 21 }, { id: 'BAMLH0A0HYM2', value: 3.01 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 21 }, { id: 'BAMLH0A0HYM2', value: 3 }]; return v; },
+  },
+  {
+    rule: 'Oil Momentum Building',
+    gate: 'Math.abs(pct) > 3, EXACT boundary — had no isolated entry at all before round 3 (H-6)',
+    // oldest=100, latest=103 -> pct = "3.0" exactly; latest=103.1 -> pct = "3.1".
+    fire: () => { const v = baseV2(); v.energy = { wti: 103.1, wtiRecent: [103.1, 100] }; return v; },
+    noFire: () => { const v = baseV2(); v.energy = { wti: 103, wtiRecent: [103, 100] }; return v; },
   },
   {
     rule: 'Satellite Confirms Conflict Intensity',
-    gate: 'totalThermal > 30000 (peer tg.urgent.length > 2 held true)',
-    fire: () => { const v = baseV2(); v.tg.urgent = [1, 2, 3]; v.thermal = [{ region: 'x', det: 31000 }]; return v; },
-    noFire: () => { const v = baseV2(); v.tg.urgent = [1, 2, 3]; v.thermal = [{ region: 'x', det: 29000 }]; return v; },
+    gate: 'totalThermal > 30000 (peer tg.urgent.length > 2 held true), EXACT boundary (round 3, H-6 — was 31000/29000)',
+    fire: () => { const v = baseV2(); v.tg.urgent = [1, 2, 3]; v.thermal = [{ region: 'x', det: 30001 }]; return v; },
+    noFire: () => { const v = baseV2(); v.tg.urgent = [1, 2, 3]; v.thermal = [{ region: 'x', det: 30000 }]; return v; },
   },
   {
     rule: 'Steepening Curve Meets Weak Labor',
-    gate: 'spread.value > 0.3 (peer weakLabor held true via the unemployment leg)',
+    gate: 'spread.value > 0.3 (peer weakLabor held true via the unemployment leg), EXACT boundary (round 3, H-6 — was 0.5/0.2)',
     fire: () => {
       const v = baseV2();
-      v.fred = [{ id: 'T10Y2Y', value: 0.5 }];
+      v.fred = [{ id: 'T10Y2Y', value: 0.31 }];
       v.bls = [{ id: 'LNS14000000', value: 4.5 }, { id: 'CES0000000001', momChange: -10 }];
       return v;
     },
     noFire: () => {
       const v = baseV2();
-      v.fred = [{ id: 'T10Y2Y', value: 0.2 }];
+      v.fred = [{ id: 'T10Y2Y', value: 0.3 }];
       v.bls = [{ id: 'LNS14000000', value: 4.5 }, { id: 'CES0000000001', momChange: -10 }];
       return v;
     },
   },
   {
     rule: 'Steepening Curve Meets Weak Labor',
-    gate: "weakLabor's PAYROLL-ONLY leg, payrolls.momChange < -50 (peer spread.value > 0.3 held true; unemployment leg held FALSE so only the payroll leg can carry weakLabor)",
+    gate: "weakLabor's UNEMPLOYMENT-ONLY leg, unemployment.value > 4.3 (peer spread.value > 0.3 held true; payroll leg held FALSE via momChange = -10 so only the unemployment leg can carry weakLabor), EXACT boundary — had no isolated entry before round 3 (H-6 named only the payroll leg)",
     fire: () => {
       const v = baseV2();
       v.fred = [{ id: 'T10Y2Y', value: 0.5 }];
-      v.bls = [{ id: 'LNS14000000', value: 4.0 }, { id: 'CES0000000001', momChange: -60 }];
+      v.bls = [{ id: 'LNS14000000', value: 4.31 }, { id: 'CES0000000001', momChange: -10 }];
       return v;
     },
     noFire: () => {
       const v = baseV2();
       v.fred = [{ id: 'T10Y2Y', value: 0.5 }];
-      v.bls = [{ id: 'LNS14000000', value: 4.0 }, { id: 'CES0000000001', momChange: -10 }];
+      v.bls = [{ id: 'LNS14000000', value: 4.3 }, { id: 'CES0000000001', momChange: -10 }];
+      return v;
+    },
+  },
+  {
+    rule: 'Steepening Curve Meets Weak Labor',
+    gate: "weakLabor's PAYROLL-ONLY leg, payrolls.momChange < -50 (peer spread.value > 0.3 held true; unemployment leg held FALSE so only the payroll leg can carry weakLabor), EXACT boundary (round 3, H-6 — was -60/-10)",
+    fire: () => {
+      const v = baseV2();
+      v.fred = [{ id: 'T10Y2Y', value: 0.5 }];
+      v.bls = [{ id: 'LNS14000000', value: 4.0 }, { id: 'CES0000000001', momChange: -50.01 }];
+      return v;
+    },
+    noFire: () => {
+      const v = baseV2();
+      v.fred = [{ id: 'T10Y2Y', value: 0.5 }];
+      v.bls = [{ id: 'LNS14000000', value: 4.0 }, { id: 'CES0000000001', momChange: -50 }];
       return v;
     },
   },
   {
     rule: 'Conflict Fueling Energy Momentum',
-    gate: 'conflictEvents > 50 (peer wtiMove > 2 held true)',
-    fire: () => { const v = baseV2(); v.acled = { totalEvents: 60 }; v.energy.wtiRecent = [105, 100]; return v; },
-    noFire: () => { const v = baseV2(); v.acled = { totalEvents: 40 }; v.energy.wtiRecent = [105, 100]; return v; },
+    gate: 'conflictEvents > 50 (peer wtiMove > 2 held true), EXACT boundary (round 3, H-6 — was 60/40)',
+    fire: () => { const v = baseV2(); v.acled = { totalEvents: 51 }; v.energy.wtiRecent = [105, 100]; return v; },
+    noFire: () => { const v = baseV2(); v.acled = { totalEvents: 50 }; v.energy.wtiRecent = [105, 100]; return v; },
+  },
+  {
+    rule: 'Conflict Fueling Energy Momentum',
+    gate: 'wtiMove > 2 (peer conflictEvents > 50 held true), EXACT boundary — had no isolated entry before round 3 (H-6 named only the conflictEvents leg)',
+    fire: () => { const v = baseV2(); v.acled = { totalEvents: 60 }; v.energy.wtiRecent = [102.01, 100]; return v; },
+    noFire: () => { const v = baseV2(); v.acled = { totalEvents: 60 }; v.energy.wtiRecent = [102, 100]; return v; },
   },
   {
     rule: 'Defense Procurement Acceleration Signal',
-    gate: 'totalFatalities > 500 (peer totalThermalAll > 20000 held true)',
-    fire: () => { const v = baseV2(); v.acled = { totalFatalities: 600 }; v.thermal = [{ region: 'x', det: 21000 }]; return v; },
-    noFire: () => { const v = baseV2(); v.acled = { totalFatalities: 400 }; v.thermal = [{ region: 'x', det: 21000 }]; return v; },
+    gate: 'totalFatalities > 500 (peer totalThermalAll > 20000 held true), EXACT boundary (round 3, H-6 — was 600/400)',
+    fire: () => { const v = baseV2(); v.acled = { totalFatalities: 501 }; v.thermal = [{ region: 'x', det: 21000 }]; return v; },
+    noFire: () => { const v = baseV2(); v.acled = { totalFatalities: 500 }; v.thermal = [{ region: 'x', det: 21000 }]; return v; },
+  },
+  {
+    rule: 'Defense Procurement Acceleration Signal',
+    gate: 'totalThermalAll > 20000 (peer totalFatalities > 500 held true), EXACT boundary — had no isolated entry before round 3 (H-6 named only the fatalities leg)',
+    fire: () => { const v = baseV2(); v.acled = { totalFatalities: 600 }; v.thermal = [{ region: 'x', det: 20001 }]; return v; },
+    noFire: () => { const v = baseV2(); v.acled = { totalFatalities: 600 }; v.thermal = [{ region: 'x', det: 20000 }]; return v; },
   },
   {
     rule: 'Credit Stress Ignored by Equity Vol',
-    gate: 'vixLow: vix.value < 18 (peer hyWide: hy.value > 3.5 held true)',
-    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 15 }]; return v; },
-    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 20 }]; return v; },
+    gate: 'vixLow: vix.value < 18 (peer hyWide: hy.value > 3.5 held true), EXACT boundary (round 3, H-6 — was 15/20)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 17.99 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }, { id: 'VIXCLS', value: 18 }]; return v; },
+  },
+  {
+    rule: 'Credit Stress Ignored by Equity Vol',
+    gate: 'hyWide: hy.value > 3.5 (peer vixLow: vix.value < 18 held true), EXACT boundary — had no isolated entry before round 3 (H-6 named only the vixLow leg)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 15 }, { id: 'BAMLH0A0HYM2', value: 3.51 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 15 }, { id: 'BAMLH0A0HYM2', value: 3.5 }]; return v; },
   },
   {
     rule: 'Equity Fear Exceeds Credit Stress',
-    gate: 'vixHigh: vix.value > 25 (peer hyTight: hy.value < 2.5 held true)',
-    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 2 }, { id: 'VIXCLS', value: 30 }]; return v; },
-    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 2 }, { id: 'VIXCLS', value: 20 }]; return v; },
+    gate: 'vixHigh: vix.value > 25 (peer hyTight: hy.value < 2.5 held true), EXACT boundary (round 3, H-6 — was 30/20)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 2 }, { id: 'VIXCLS', value: 25.01 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'BAMLH0A0HYM2', value: 2 }, { id: 'VIXCLS', value: 25 }]; return v; },
+  },
+  {
+    rule: 'Equity Fear Exceeds Credit Stress',
+    gate: 'hyTight: hy.value < 2.5 (peer vixHigh: vix.value > 25 held true), EXACT boundary — had no isolated entry before round 3 (H-6 named only the vixHigh leg)',
+    fire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 30 }, { id: 'BAMLH0A0HYM2', value: 2.49 }]; return v; },
+    noFire: () => { const v = baseV2(); v.fred = [{ id: 'VIXCLS', value: 30 }, { id: 'BAMLH0A0HYM2', value: 2.5 }]; return v; },
   },
   {
     rule: 'Inflation Pipeline Building Pressure',
-    gate: 'supplyPressure: gscpi.value > 0.5 (peer ppiRising: ppi.momChangePct > 0.3 held true)',
+    gate: 'supplyPressure: gscpi.value > 0.5 (peer ppiRising: ppi.momChangePct > 0.3 held true), EXACT boundary (round 3, H-6 — was 0.6/0.4)',
     fire: () => {
       const v = baseV2();
       v.bls = [{ id: 'WPUFD49104', momChangePct: 0.9 }, { id: 'CUUR0000SA0', value: 300 }];
-      v.gscpi = { value: 0.6, interpretation: 'x' };
+      v.gscpi = { value: 0.51, interpretation: 'x' };
       return v;
     },
     noFire: () => {
       const v = baseV2();
       v.bls = [{ id: 'WPUFD49104', momChangePct: 0.9 }, { id: 'CUUR0000SA0', value: 300 }];
-      v.gscpi = { value: 0.4, interpretation: 'x' };
+      v.gscpi = { value: 0.5, interpretation: 'x' };
+      return v;
+    },
+  },
+  {
+    rule: 'Inflation Pipeline Building Pressure',
+    gate: 'ppiRising: ppi.momChangePct > 0.3 (peer supplyPressure: gscpi.value > 0.5 held true), EXACT boundary — this rule\'s SECOND named H-6 mutant, previously proven only inexactly (0.9/0.1) via the RULES table, never isolated at 0.3 itself',
+    fire: () => {
+      const v = baseV2();
+      v.bls = [{ id: 'WPUFD49104', momChangePct: 0.31 }, { id: 'CUUR0000SA0', value: 300 }];
+      v.gscpi = { value: 0.9, interpretation: 'x' };
+      return v;
+    },
+    noFire: () => {
+      const v = baseV2();
+      v.bls = [{ id: 'WPUFD49104', momChangePct: 0.3 }, { id: 'CUUR0000SA0', value: 300 }];
+      v.gscpi = { value: 0.9, interpretation: 'x' };
       return v;
     },
   },
@@ -495,8 +591,8 @@ describe('AC-2 — every retained rule fires and does not fire', () => {
     assert.equal(ideas.length, 9, 'the slice(0, 8) cap must be gone — all nine fired rules must be returned');
   });
 
-  assert.equal(GATE_ISOLATION.length, 10,
-    'this table isolates the ten threshold gates the Judge named as never independently proven');
+  assert.equal(GATE_ISOLATION.length, 19,
+    'this table isolates all 18 threshold gates named in the Judge\'s H-6 mutant table, at EXACT boundaries, plus the Conflict-Energy urgent.length gate which was already exact');
 
   for (const g of GATE_ISOLATION) {
     test(`gate isolation — ${g.rule} — ${g.gate}: fires when the gate is true`, () => {
@@ -614,6 +710,118 @@ describe('AC-2 — every retained rule fires and does not fire', () => {
     assert.doesNotThrow(() => { ideas = generateIdeas(v); });
     assert.ok(!ideas.some(i => i.title === 'Conflict Fueling Energy Momentum'));
   });
+
+  // ── Round 3 additions (Judge finding H-6) — predicates beyond the Judge's mutant table ──
+  //
+  // The Judge's table names 18 threshold mutants (all given EXACT boundaries above) plus a
+  // 19th named explicitly: the `V2.gscpi` existence guard. Re-enumerating every predicate in
+  // generateIdeas() from source (not from the Judge's list — the spec requires an independent
+  // pass) turned up three MORE gaps the table doesn't mention, covered below, plus two
+  // predicates that are provably unkillable and are documented instead of chased.
+
+  // The Judge's 19th mutant, exactly as named: removing the `V2.gscpi` existence guard from
+  // `if (ppi && cpi && V2.gscpi)` (dashboard/inject.mjs:370) throws TypeError on
+  // `V2.gscpi.value` (line 371) once ppi and cpi are both present but gscpi is not — a real
+  // crash path with no fixture anywhere in this file before now.
+  test('gate isolation — Inflation Pipeline Building Pressure — V2.gscpi existence, the Judge\'s 19th (H-6) mutant (peers ppi/cpi present and ppiRising true, gscpi record absent)', () => {
+    const v = baseV2();
+    v.bls = [{ id: 'WPUFD49104', momChangePct: 0.9 }, { id: 'CUUR0000SA0', value: 300 }];
+    // v.gscpi intentionally left unset — this is the exact shape the Judge described.
+    let ideas;
+    assert.doesNotThrow(() => { ideas = generateIdeas(v); },
+      'generateIdeas must not throw when ppi and cpi are present but gscpi is absent');
+    assert.ok(!ideas.some(i => i.title === 'Inflation Pipeline Building Pressure'),
+      'rule must not fire without a GSCPI record, regardless of PPI/CPI');
+  });
+
+  // Found by enumeration, NOT in the Judge's table: `if (hy && vix)` guards the Credit
+  // Stress / Equity Fear block (dashboard/inject.mjs:347) the exact same way the gscpi guard
+  // above does. Dropping either half of this `&&` crashes on the OTHER record's `.value` once
+  // execution is inside the block — hy present/vix absent crashes on `vix.value` (vixLow);
+  // vix present/hy absent crashes on `hy.value` (hyWide). Both directions must not throw.
+  test('gate isolation — Credit Stress / Equity Fear block — hy && vix existence, hy present but vix absent, found beyond the Judge\'s list', () => {
+    const v = baseV2();
+    v.fred = [{ id: 'BAMLH0A0HYM2', value: 4 }]; // hy present, vix absent
+    let ideas;
+    assert.doesNotThrow(() => { ideas = generateIdeas(v); },
+      'generateIdeas must not throw when hy is present but vix is absent');
+    assert.ok(!ideas.some(i => i.title === 'Credit Stress Ignored by Equity Vol'));
+    assert.ok(!ideas.some(i => i.title === 'Equity Fear Exceeds Credit Stress'));
+  });
+
+  test('gate isolation — Credit Stress / Equity Fear block — hy && vix existence, vix present but hy absent, found beyond the Judge\'s list', () => {
+    const v = baseV2();
+    v.fred = [{ id: 'VIXCLS', value: 15 }]; // vix present, hy absent
+    let ideas;
+    assert.doesNotThrow(() => { ideas = generateIdeas(v); },
+      'generateIdeas must not throw when vix is present but hy is absent');
+    assert.ok(!ideas.some(i => i.title === 'Credit Stress Ignored by Equity Vol'));
+    assert.ok(!ideas.some(i => i.title === 'Equity Fear Exceeds Credit Stress'));
+  });
+
+  // Found by enumeration: Safe Haven Demand Rising's existence guards were only ever isolated
+  // in one direction above (vix present, hy absent — see "beyond the Judge's list" section
+  // below). The mirror direction — hy's own threshold satisfied, vix absent entirely — was
+  // never driven, and a mutation dropping `hy &&` from
+  // `vix && vix.value > 20 && hy && hy.value > 3` would crash on `hy.value` once vix's own
+  // conditions pass and hy is undefined.
+  test('gate isolation — Safe Haven Demand Rising — hy existence, found beyond the Judge\'s list (peer vix.value > 20 held true, hy record absent)', () => {
+    const v = baseV2();
+    v.fred = [{ id: 'VIXCLS', value: 21 }]; // vix satisfies its own threshold, hy absent
+    let ideas;
+    assert.doesNotThrow(() => { ideas = generateIdeas(v); },
+      'generateIdeas must not throw when vix is present but hy is absent (Safe Haven leg)');
+    assert.ok(!ideas.some(i => i.title === 'Safe Haven Demand Rising'),
+      'rule must not fire without an HY record even when VIX alone satisfies its own threshold');
+  });
+
+  // Not a firing gate at all, and not something the Judge's table (which only lists mutants
+  // that change WHETHER a rule fires) has any way to name: Elevated Volatility Regime's own
+  // `confidence` FIELD is itself gated — `vix.value > 25 ? 'High' : 'Medium'`
+  // (dashboard/inject.mjs:277) — and every existing fixture for this rule asserts only title
+  // presence, never confidence, so a mutation to this threshold (e.g. `> 25` -> `> 24`) was
+  // never observable by anything in this file before now.
+  test('gate isolation — Elevated Volatility Regime — confidence threshold vix.value > 25, EXACT boundary, "Medium" side, found beyond the Judge\'s list', () => {
+    const v = baseV2();
+    v.fred = [{ id: 'VIXCLS', value: 25 }];
+    const idea = generateIdeas(v).find(i => i.title === 'Elevated Volatility Regime');
+    assert.ok(idea, 'expected the rule to fire at vix = 25 (> 20)');
+    assert.equal(idea.confidence, 'Medium', 'vix = 25 must NOT cross the confidence threshold (25 > 25 is false)');
+  });
+
+  test('gate isolation — Elevated Volatility Regime — confidence threshold vix.value > 25, EXACT boundary, "High" side, found beyond the Judge\'s list', () => {
+    const v = baseV2();
+    v.fred = [{ id: 'VIXCLS', value: 25.01 }];
+    const idea = generateIdeas(v).find(i => i.title === 'Elevated Volatility Regime');
+    assert.ok(idea, 'expected the rule to fire at vix = 25.01 (> 20)');
+    assert.equal(idea.confidence, 'High', 'vix = 25.01 must cross the confidence threshold');
+  });
+
+  // ── Documented, not chased: two predicates that are provably unkillable ────────────────
+  //
+  // Same shape as the wtiRecent.length structural note above: found by re-enumerating
+  // generateIdeas() from source, confirmed by reasoning about JS semantics, and confirmed
+  // empirically against the round's mutation harness (see the round's Test Evidence) — not
+  // chased with a fixture, because no fixture could ever kill either one.
+  //
+  // (a) `payrolls.momChange && payrolls.momChange < -50` (dashboard/inject.mjs:312, the
+  // weakLabor payroll leg). The leading `payrolls.momChange &&` is a truthiness guard, but
+  // for EVERY possible value of momChange the guarded expression already agrees with the
+  // unguarded `payrolls.momChange < -50` alone: undefined/null/0/NaN are all falsy AND all
+  // fail `< -50` on their own (a NaN or undefined comparison is always false; 0 is not
+  // < -50); any other number's truthiness never disagrees with its own `< -50` result.
+  // Deleting the `&&` changes no observable output for any input — this is not a thin test
+  // suite, the mutant is byte-for-byte behaviorally identical to the original.
+  //
+  // (b) `V2.acled?.totalEvents || 0` and `V2.acled?.totalFatalities || 0`
+  // (dashboard/inject.mjs:323, :336). The `|| 0` only changes the value when the left side is
+  // falsy (undefined, null, 0, or NaN) — and in every one of those cases the subsequent
+  // `> 50` / `> 500` comparison is already false whether the value is defaulted to 0 or left
+  // as-is (0, undefined, and NaN are all "not greater than" any positive N). Deleting `|| 0`
+  // is therefore also unobservable from generateIdeas' output. (This is unrelated to the `?.`
+  // immediately to its left, which IS load-bearing and IS covered — baseV2() never sets
+  // `acled` at all, so every other fixture in this file that omits it already exercises
+  // `V2.acled?.totalEvents` with `V2.acled` undefined, on every run.)
 });
 
 // ─── AC-3 — FRED present and absent ───────────────────────────────────────────────────────
@@ -841,6 +1049,144 @@ describe('H-4 — runIdeasCycle: two consecutive production-path sweeps', () => 
   });
 });
 
+// ─── H-5a — runSweepCycle: the production sweep, driven end to end ─────────────────────────
+//
+// Judge finding H-5 (build r2): the seams were tested but their production CALLER was not, so
+// swapping runSweepCycle's `runIdeasCycle(...)` back to the legacy `memory.addRun(synthesized)`
+// left the whole suite green — a real sweep could serve and persist no fallback ideas.
+//
+// Build r3 added `runsDir` to runSweepCycle's injectable deps. It was the last thing pinning
+// the sweep to the repo: the very first side effect is
+// `writeFileSync(join(runsDir,'latest.json'), ...)`, which runs BEFORE ideas are resolved, so
+// without that dep any call overwrote the real tool/runs/latest.json. Production callers pass
+// nothing and still get RUNS_DIR.
+describe('H-5a — runSweepCycle: the production sweep, executed with fakes', () => {
+  const sweepV2 = () => ({
+    ...baseV2(),
+    meta: { timestamp: '2026-01-01T00:00:00Z', sourcesOk: 29, sourcesFailed: 0 },
+    // VIX 30 fires "Elevated Volatility Regime" — a real, named rule outcome
+    fred: [{ id: 'VIXCLS', value: 30 }],
+    news: [], newsFeed: [], health: [],
+  });
+
+  const drive = async (provider) => {
+    const dir = mkdtempSync(join(tmpdir(), 'crucix-sweep-'));
+    const memoryManager = new MemoryManager(dir);
+    const v2 = sweepV2();
+    try {
+      await runSweepCycle({
+        briefing: async () => ({ crucix: {}, sources: {}, errors: [], timing: {} }),
+        synthesizeFn: async () => v2,
+        provider,
+        memoryManager,
+        runsDir: dir,
+      });
+      return { v2, stored: memoryManager.getLastRun(), dir };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test('no provider: the sweep serves rule ideas and PERSISTS the ideas it served', async () => {
+    const { v2, stored } = await drive(null);
+    assert.equal(v2.ideasSource, 'rules', 'sweep must label the fallback source');
+    assert.deepEqual(v2.ideas, generateIdeas(sweepV2()),
+      'sweep must serve exactly what the rule engine produces');
+    assert.ok(v2.ideas.length > 0, 'this fixture is chosen to fire a rule, so the array is non-empty');
+    // The kill for mutant 1: the legacy addRun path persists BEFORE ideas exist, so `stored.ideas`
+    // would be [] while the served array is non-empty.
+    assert.deepEqual(
+      stored.ideas.map(i => i.title), v2.ideas.map(i => i.title),
+      'the persisted run must carry the ideas actually served, not the pre-ideas snapshot',
+    );
+  });
+
+  test('provider succeeds: the LLM result passes through the sweep untouched', async () => {
+    const llm = [{ title: 'LLM Idea', type: 'LONG', confidence: 'HIGH', horizon: 'Days' }];
+    const { v2, stored } = await drive({
+      isConfigured: true, name: 'fake',
+      complete: async () => ({ text: JSON.stringify({ ideas: llm }) }),
+    });
+    // Whatever the provider path yields, the sweep must persist what it served — that is the
+    // invariant mutant 1 breaks, independent of which branch produced the ideas.
+    assert.deepEqual(
+      stored.ideas.map(i => i.title), v2.ideas.map(i => i.title),
+      'persisted ideas must equal served ideas on the provider path too',
+    );
+    assert.ok(['llm', 'rules'].includes(v2.ideasSource), 'source must be a known label');
+  });
+});
+
+describe('H-5b — cliInject end-to-end: real HTML injection, two fixtures', () => {
+  let realFetch;
+  before(() => {
+    realFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('<rss><channel></channel></rss>', { status: 200 });
+  });
+  after(() => { globalThis.fetch = realFetch; });
+
+  const REAL_HTML_PATH = fileURLToPath(new URL('dashboard/public/jarvis.html', ROOT));
+
+  function rawFixture(sources) {
+    return { crucix: { timestamp: '2024-01-01T00:00:00.000Z' }, timing: {}, sources };
+  }
+
+  function tempHtmlCopy(dir) {
+    const htmlPath = join(dir, 'jarvis.html');
+    writeFileSync(htmlPath, readFileSync(REAL_HTML_PATH, 'utf8'));
+    return htmlPath;
+  }
+
+  function injectedPayload(htmlPath) {
+    const html = readFileSync(htmlPath, 'utf8');
+    const match = html.match(/^let D = (.*);\s*$/m);
+    assert.ok(match, 'expected cliInject to have replaced the `let D = ...;` line');
+    return JSON.parse(match[1]);
+  }
+
+  test('non-empty fixture: ideasSource "rules", ideas deep-equal generateIdeas(V2) — kills mutant 2', async () => {
+    const sources = { FRED: { indicators: [{ id: 'VIXCLS', value: 21 }] } };
+    const expected = generateIdeas(await synthesize(rawFixture(sources)));
+    assert.ok(expected.length > 0, 'fixture must actually fire a rule, or this proves nothing about mutant 2');
+
+    const dir = mkdtempSync(join(tmpdir(), 'crucix-cliinject-'));
+    try {
+      const dataPath = join(dir, 'latest.json');
+      writeFileSync(dataPath, JSON.stringify(rawFixture(sources)));
+      const htmlPath = tempHtmlCopy(dir);
+
+      await cliInject({ dataPath, htmlPath, open: false });
+
+      const payload = injectedPayload(htmlPath);
+      assert.equal(payload.ideasSource, 'rules');
+      assert.deepEqual(payload.ideas, expected);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('zero-result fixture: ideasSource stays "rules" with an EMPTY ideas array, never "disabled" — kills mutant 3', async () => {
+    const sources = {};
+    const expectedEmpty = generateIdeas(await synthesize(rawFixture(sources)));
+    assert.deepEqual(expectedEmpty, [], 'fixture must genuinely fire no rule, or this proves nothing about mutant 3');
+
+    const dir = mkdtempSync(join(tmpdir(), 'crucix-cliinject-'));
+    try {
+      const dataPath = join(dir, 'latest.json');
+      writeFileSync(dataPath, JSON.stringify(rawFixture(sources)));
+      const htmlPath = tempHtmlCopy(dir);
+
+      await cliInject({ dataPath, htmlPath, open: false });
+
+      const payload = injectedPayload(htmlPath);
+      assert.equal(payload.ideasSource, 'rules', 'a legitimate no-signal run must report "rules", not "disabled"');
+      assert.deepEqual(payload.ideas, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // AC-4 — rule ideas reach each consumer, asserted AT the consumer.
 //
@@ -935,5 +1281,34 @@ describe('AC-4 — buildBriefSections renders rule ideas at both /brief digests'
     const digest = buildBriefSections(briefCurrentData([{ title: 'Upper Long', type: 'LONG' }]), null, { markdown: 'telegram' });
     assert.ok(digest.includes('👁️ Upper Long'), 'an uppercase-typed idea must fall through to the default glyph');
     assert.ok(!digest.includes('📈 Upper Long'), 'an uppercase-typed idea must NOT get the long glyph — backlog 021');
+  });
+});
+
+// ─── H-7 — the actual registered /brief callbacks, not a copy of their body ─────────────────
+//
+// AC-4 above proves buildBriefSections renders rule ideas correctly when called directly. It
+// does NOT prove handleTelegramBrief/handleDiscordBrief (server.mjs) — the exact callback
+// bodies registered via `telegramAlerter.onCommand('/brief', () => handleTelegramBrief())` and
+// `discordAlerter.onCommand('brief', () => handleDiscordBrief())` — actually forward their
+// data/delta into that call unchanged. A mutant that swaps either handler's first argument for
+// `{ ...data, ideas: [] }` before calling buildBriefSections would leave every AC-4 test
+// green, since none of them ever calls these two functions. These do — with explicit
+// data/delta (not the module-state defaults), so no real bot state or module-level MemoryManager
+// is touched.
+describe('H-7 — handleTelegramBrief / handleDiscordBrief: the registered /brief callbacks', () => {
+  test('handleTelegramBrief renders rule-dialect ideas via the Telegram dialect — kills mutant 4', async () => {
+    const digest = await handleTelegramBrief({ data: briefCurrentData(BRIEF_IDEAS), delta: null });
+    assert.ok(digest.includes('💡 *Top Ideas:*'), 'expected the single-* "Top Ideas" header');
+    assert.ok(digest.includes('📈 Long Idea Title'), 'expected the long glyph beside its title');
+    assert.ok(digest.includes('🛡️ Hedge Idea Title'), 'expected the hedge glyph beside its title');
+    assert.ok(digest.includes('👁️ Watch Idea Title'), 'expected the default glyph beside the watch title');
+  });
+
+  test('handleDiscordBrief renders rule-dialect ideas via the Discord dialect — kills mutant 5', async () => {
+    const digest = await handleDiscordBrief({ data: briefCurrentData(BRIEF_IDEAS), delta: null });
+    assert.ok(digest.includes('**💡 Top Ideas:**'), 'expected the double-** "Top Ideas" header');
+    assert.ok(digest.includes('📈 Long Idea Title'), 'expected the long glyph beside its title');
+    assert.ok(digest.includes('🛡️ Hedge Idea Title'), 'expected the hedge glyph beside its title');
+    assert.ok(digest.includes('👁️ Watch Idea Title'), 'expected the default glyph beside the watch title');
   });
 });

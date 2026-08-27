@@ -106,6 +106,20 @@ export function buildBriefSections(currentData, delta, { markdown } = {}) {
   return sections.join('\n');
 }
 
+// The /brief callback BODIES, extracted and exported so the registered symbol IS the
+// exported one — not a copy a test would have to trust matches (backlog 013 build round 3,
+// judge finding H-7). Data/delta default to live module state, matching the zero-arg
+// invocation the bot dispatchers below use; a test drives either function directly with
+// injected data/delta instead. Output is byte-identical to before this extraction — only
+// the markdown dialect passed to buildBriefSections distinguishes the two.
+export async function handleTelegramBrief({ data = currentData, delta = memory.getLastDelta() } = {}) {
+  return buildBriefSections(data, delta, { markdown: 'telegram' });
+}
+
+export async function handleDiscordBrief({ data = currentData, delta = memory.getLastDelta() } = {}) {
+  return buildBriefSections(data, delta, { markdown: 'discord' });
+}
+
 if (llmProvider) console.log(`[Crucix] LLM enabled: ${llmProvider.name} (${llmProvider.model})`);
 if (telegramAlerter.isConfigured) {
   console.log('[Crucix] Telegram alerts enabled');
@@ -145,9 +159,7 @@ if (telegramAlerter.isConfigured) {
     return '🚀 Manual sweep triggered. You\'ll receive alerts if anything significant is detected.';
   });
 
-  telegramAlerter.onCommand('/brief', async () => {
-    return buildBriefSections(currentData, memory.getLastDelta(), { markdown: 'telegram' });
-  });
+  telegramAlerter.onCommand('/brief', () => handleTelegramBrief());
 
   telegramAlerter.onCommand('/portfolio', async () => {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
@@ -193,9 +205,7 @@ if (discordAlerter.isConfigured) {
     return '🚀 Manual sweep triggered. You\'ll receive alerts if anything significant is detected.';
   });
 
-  discordAlerter.onCommand('brief', async () => {
-    return buildBriefSections(currentData, memory.getLastDelta(), { markdown: 'discord' });
-  });
+  discordAlerter.onCommand('brief', () => handleDiscordBrief());
 
   discordAlerter.onCommand('portfolio', async () => {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
@@ -336,7 +346,24 @@ export async function runIdeasCycle(synthesized, provider, memoryManager) {
   return { delta, ideas, ideasSource };
 }
 
-async function runSweepCycle() {
+// Injectable dependencies with production defaults (backlog 013 build round 3, judge finding
+// H-5a) — every existing call site (the manual /sweep command handlers, the startup call, and
+// the setInterval below) invokes this with zero arguments, so all four defaults resolve to the
+// same module-level bindings used before this change, and behaviour is unchanged. A test can
+// pass fakes for any subset to drive the sweep→ideas→persist sequence without a live network
+// call or a real MemoryManager on disk.
+export async function runSweepCycle(deps = {}) {
+  const {
+    briefing = fullBriefing,
+    synthesizeFn = synthesize,
+    provider = llmProvider,
+    memoryManager = memory,
+    // Injectable so a test can drive a whole sweep without writing into the repo's
+    // runs/ directory. Production callers pass nothing and get RUNS_DIR, as before.
+    // (backlog 013 build round 3, judge finding H-5.)
+    runsDir = RUNS_DIR,
+  } = deps;
+
   if (sweepInProgress) {
     console.log('[Crucix] Sweep already in progress, skipping');
     return;
@@ -351,31 +378,31 @@ async function runSweepCycle() {
 
   try {
     // 1. Run the full briefing sweep
-    const rawData = await fullBriefing();
+    const rawData = await briefing();
 
     // 2. Save to runs/latest.json
-    writeFileSync(join(RUNS_DIR, 'latest.json'), JSON.stringify(rawData, null, 2));
+    writeFileSync(join(runsDir, 'latest.json'), JSON.stringify(rawData, null, 2));
     lastSweepTime = new Date().toISOString();
 
     // 3. Synthesize into dashboard format
     console.log('[Crucix] Synthesizing dashboard data...');
-    const synthesized = await synthesize(rawData);
+    const synthesized = await synthesizeFn(rawData);
 
     // 4-6. Delta computation → trade ideas (LLM, falling back to rule-based per backlog
     //    013) → persist, in that exact order (backlog 013/AC-9's ordering fix). Extracted
     //    to runIdeasCycle so the same sequence is exercised by tests as by production
     //    (backlog 013 build round 2, judge finding H-4).
-    const { delta } = await runIdeasCycle(synthesized, llmProvider, memory);
+    const { delta } = await runIdeasCycle(synthesized, provider, memoryManager);
 
     // 7. Alert evaluation — Telegram + Discord (LLM with rule-based fallback, multi-tier, semantic dedup)
     if (delta?.summary?.totalChanges > 0) {
       if (telegramAlerter.isConfigured) {
-        telegramAlerter.evaluateAndAlert(llmProvider, delta, memory).catch(err => {
+        telegramAlerter.evaluateAndAlert(provider, delta, memoryManager).catch(err => {
           console.error('[Crucix] Telegram alert error:', err.message);
         });
       }
       if (discordAlerter.isConfigured) {
-        discordAlerter.evaluateAndAlert(llmProvider, delta, memory).catch(err => {
+        discordAlerter.evaluateAndAlert(provider, delta, memoryManager).catch(err => {
           console.error('[Crucix] Discord alert error:', err.message);
         });
       }
@@ -389,7 +416,7 @@ async function runSweepCycle() {
     }
 
     // Prune old alerted signals
-    memory.pruneAlertedSignals();
+    memoryManager.pruneAlertedSignals();
 
     currentData = synthesized;
 

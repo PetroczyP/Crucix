@@ -707,10 +707,20 @@ export async function resolveCliIdeas(V2, provider) {
   return { ideas: V2.ideas, ideasSource: V2.ideasSource };
 }
 
-async function cliInject() {
-  const data = JSON.parse(readFileSync(join(ROOT, 'runs/latest.json'), 'utf8'));
-  const htmlOverride = getCliArg('--html');
-  const shouldOpen = !process.argv.includes('--no-open');
+// Injectable dependencies with today's defaults (backlog 013 build round 3, judge finding
+// H-5b) — dataPath/htmlPath/open all default to exactly what the direct-invocation CLI path
+// used before this change (runs/latest.json, dashboard/public/jarvis.html, and whatever
+// --no-open says). The one deliberate difference: `open` defaults to `false`, NOT to reading
+// process.argv, so calling this programmatically (e.g. from a test) never spawns a browser
+// tab — only the isMain block below, which explicitly resolves `--no-open` itself, opts back
+// into the auto-open behaviour. dataPath/htmlPath let a test point this at a fixture
+// latest.json and a temp HTML file without touching process.argv or the real dashboard file.
+export async function cliInject({
+  dataPath = join(ROOT, 'runs/latest.json'),
+  htmlPath = join(ROOT, 'dashboard/public/jarvis.html'),
+  open = false,
+} = {}) {
+  const data = JSON.parse(readFileSync(dataPath, 'utf8'));
 
   console.log('Fetching RSS news feeds...');
   const V2 = await synthesize(data);
@@ -726,14 +736,13 @@ async function cliInject() {
   console.log('Size:', json.length, 'bytes | Air:', V2.air.length, '| Thermal:', V2.thermal.length,
     '| News:', V2.news.length, '| Ideas:', V2.ideas.length, '| Sources:', V2.health.length);
 
-  const htmlPath = htmlOverride || join(ROOT, 'dashboard/public/jarvis.html');
   let html = readFileSync(htmlPath, 'utf8');
   // Use a replacer function so JSON is inserted literally even if it contains `$`.
   html = html.replace(/^(let|const) D = .*;\s*$/m, () => 'let D = ' + json + ';');
   writeFileSync(htmlPath, html);
   console.log('Data injected into jarvis.html!');
 
-  if (!shouldOpen) return;
+  if (!open) return;
 
   // Auto-open dashboard in default browser
   // NOTE: On Windows, `start` in PowerShell is an alias for Start-Service, not cmd's start.
@@ -751,5 +760,9 @@ async function cliInject() {
 const isMain = process.argv[1]
   && fileURLToPath(import.meta.url).replace(/\\/g, '/') === process.argv[1].replace(/\\/g, '/');
 if (isMain) {
-  await cliInject();
+  const htmlOverride = getCliArg('--html');
+  await cliInject({
+    htmlPath: htmlOverride || undefined,
+    open: !process.argv.includes('--no-open'),
+  });
 }
