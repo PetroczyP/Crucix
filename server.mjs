@@ -159,7 +159,15 @@ if (telegramAlerter.isConfigured) {
     return '🚀 Manual sweep triggered. You\'ll receive alerts if anything significant is detected.';
   });
 
-  telegramAlerter.onCommand('/brief', () => handleTelegramBrief());
+  // Registered directly — not a wrapper closure — so the tested function IS the callback
+  // the bot invokes (backlog 013 build round 4, judge finding H-7). Safe because the
+  // dispatcher (lib/alerts/telegram.mjs:436) calls handler(args, messageId) with args always
+  // a string (never null/undefined in practice, and even so, undefined would hit
+  // handleTelegramBrief's own `= {}` default); handleTelegramBrief only declares one
+  // parameter, so the extra messageId argument is simply ignored. Destructuring a string's
+  // nonexistent `.data`/`.delta` properties yields undefined, which triggers the per-key
+  // defaults — verified with `f('hello')` behaving identically to `f()` for this shape.
+  telegramAlerter.onCommand('/brief', handleTelegramBrief);
 
   telegramAlerter.onCommand('/portfolio', async () => {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
@@ -205,7 +213,11 @@ if (discordAlerter.isConfigured) {
     return '🚀 Manual sweep triggered. You\'ll receive alerts if anything significant is detected.';
   });
 
-  discordAlerter.onCommand('brief', () => handleDiscordBrief());
+  // Registered directly for the same reason as the Telegram /brief handler above (backlog
+  // 013 build round 4, judge finding H-7). The Discord dispatcher (lib/alerts/discord.mjs:206)
+  // calls handler(args) with args always a string (`getString('input') || ''`), which
+  // destructures the same way — safe for the same reason.
+  discordAlerter.onCommand('brief', handleDiscordBrief);
 
   discordAlerter.onCommand('portfolio', async () => {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
@@ -346,13 +358,16 @@ export async function runIdeasCycle(synthesized, provider, memoryManager) {
   return { delta, ideas, ideasSource };
 }
 
-// Injectable dependencies with production defaults (backlog 013 build round 3, judge finding
-// H-5a) — every existing call site (the manual /sweep command handlers, the startup call, and
-// the setInterval below) invokes this with zero arguments, so all four defaults resolve to the
-// same module-level bindings used before this change, and behaviour is unchanged. A test can
-// pass fakes for any subset to drive the sweep→ideas→persist sequence without a live network
-// call or a real MemoryManager on disk.
-export async function runSweepCycle(deps = {}) {
+// Default resolution extracted into its own exported pure function so the production
+// defaults are assertable values, not just inline destructuring a test can only exercise
+// indirectly (backlog 013 build round 4, judge finding H-5). Injectable dependencies with
+// production defaults (backlog 013 build round 3, judge finding H-5a) — every existing call
+// site (the manual /sweep command handlers, the startup call, and the setInterval below)
+// invokes runSweepCycle with zero arguments, so all five defaults resolve to the same
+// module-level bindings used before this change, and behaviour is unchanged. A test can pass
+// fakes for any subset to drive the sweep→ideas→persist sequence without a live network call
+// or a real MemoryManager on disk.
+export function resolveSweepDeps(deps = {}) {
   const {
     briefing = fullBriefing,
     synthesizeFn = synthesize,
@@ -363,6 +378,11 @@ export async function runSweepCycle(deps = {}) {
     // (backlog 013 build round 3, judge finding H-5.)
     runsDir = RUNS_DIR,
   } = deps;
+  return { briefing, synthesizeFn, provider, memoryManager, runsDir };
+}
+
+export async function runSweepCycle(deps = {}) {
+  const { briefing, synthesizeFn, provider, memoryManager, runsDir } = resolveSweepDeps(deps);
 
   if (sweepInProgress) {
     console.log('[Crucix] Sweep already in progress, skipping');
