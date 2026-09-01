@@ -24,10 +24,15 @@ export default {
   refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 15,
 
   llm: {
-    provider: process.env.LLM_PROVIDER || null, // anthropic | openai | gemini | codex | openrouter | minimax | mistral | ollama | grok
-    apiKey: process.env.LLM_API_KEY || null,
+    provider: process.env.LLM_PROVIDER || null, // anthropic | openai | gemini | codex | openrouter | minimax | mistral | ollama | grok | dial
+    // DIAL_API_KEY is accepted as a fallback so an existing DIAL credential works
+    // without duplicating it into LLM_API_KEY.
+    apiKey: process.env.LLM_API_KEY || process.env.DIAL_API_KEY || null,
     model: process.env.LLM_MODEL || null,
     baseUrl: process.env.OLLAMA_BASE_URL || null,
+    // DIAL is self-hosted — no default host exists, so this is required for provider=dial
+    dialBaseUrl: process.env.DIAL_BASE_URL || null,
+    dialApiVersion: process.env.DIAL_API_VERSION || null,
   },
 
   telegram: {
